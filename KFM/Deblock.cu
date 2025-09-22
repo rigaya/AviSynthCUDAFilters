@@ -1206,32 +1206,32 @@ void cpu_sharpen_coeff(uint8_t* dst,
 
 template <typename pixel_t>
 __global__ void kl_sharpen(pixel_t* dst, int width, int height, int pitch,
-    cudaTextureObject_t src, cudaTextureObject_t coeff, const pixel_t* unsharp)
+    const pixel_t* src, int srcPitch, cudaTextureObject_t coeff, const pixel_t* unsharp)
 {
     int x = threadIdx.x + blockIdx.x * blockDim.x;
     int y = threadIdx.y + blockIdx.y * blockDim.y;
 
     if (x < width && y < height) {
-        int s = tex2D<pixel_t>(src, x, y);
+        int s = src[x + y * srcPitch];
         int l = s;
         int h = s;
         int v;
 
-        v = tex2D<pixel_t>(src, x - 1, y - 1);
+        v = src[max(x - 1, 0)          + max(y - 1, 0) * srcPitch];
         l = min(l, v); h = max(h, v);
-        v = tex2D<pixel_t>(src, x + 0, y - 1);
+        v = src[   (x + 0)             + max(y - 1, 0) * srcPitch];
         l = min(l, v); h = max(h, v);
-        v = tex2D<pixel_t>(src, x + 1, y - 1);
+        v = src[min(x + 1, height - 1) + max(y - 1, 0) * srcPitch];
         l = min(l, v); h = max(h, v);
-        v = tex2D<pixel_t>(src, x - 1, y + 0);
+        v = src[max(x - 1, 0)          + (y + 0) * srcPitch];
         l = min(l, v); h = max(h, v);
-        v = tex2D<pixel_t>(src, x + 1, y + 0);
+        v = src[min(x + 1, height - 1) + (y + 0) * srcPitch];
         l = min(l, v); h = max(h, v);
-        v = tex2D<pixel_t>(src, x - 1, y + 1);
+        v = src[max(x - 1, 0)          + min(y + 1, height - 1) * srcPitch];
         l = min(l, v); h = max(h, v);
-        v = tex2D<pixel_t>(src, x + 0, y + 1);
+        v = src[   (x + 0)             + min(y + 1, height - 1) * srcPitch];
         l = min(l, v); h = max(h, v);
-        v = tex2D<pixel_t>(src, x + 1, y + 1);
+        v = src[min(x + 1, height - 1) + min(y + 1, height - 1) * srcPitch];
         l = min(l, v); h = max(h, v);
 
         float c = tex2D<float>(coeff, x * (1.0f / 8.0f) + 0.5f, y * (1.0f / 8.0f) + 0.5f);
@@ -1426,9 +1426,6 @@ class SharpenFilter : public KFMFilterBase
             }
 
             {
-                TextureObject texSrc(
-                    makeResourceDesc(src.GetReadPtr<pixel_t>(plane), width, height, src.GetPitch<pixel_t>(plane)),
-                    makeTextureDesc(cudaAddressModeClamp, cudaFilterModePoint, cudaReadModeElementType), env);
                 TextureObject texCoeff(
                     makeResourceDesc(coeff.GetReadPtr<uint8_t>(plane), qpw, qph, coeff.GetPitch<uint8_t>(plane)),
                     makeTextureDesc(cudaAddressModeClamp, cudaFilterModeLinear, cudaReadModeNormalizedFloat), env);
@@ -1443,7 +1440,7 @@ class SharpenFilter : public KFMFilterBase
                 } else {
                     kl_sharpen <<<blocks, threads, 0, stream>>> (
                         dst.GetWritePtr<pixel_t>(plane), width, height, dst.GetPitch<pixel_t>(plane),
-                        texSrc, texCoeff, unsharp.GetReadPtr<pixel_t>(plane));
+                        src.GetReadPtr<pixel_t>(plane), src.GetPitch<pixel_t>(plane), texCoeff, unsharp.GetReadPtr<pixel_t>(plane));
                     DEBUG_SYNC;
                 }
             }
@@ -1476,30 +1473,6 @@ class SharpenFilter : public KFMFilterBase
         Frame qp = qpclip->GetFrame(n, env);
         Frame coeff = env->NewVideoFrame(coeffvi);
         Frame dst = env->NewVideoFrame(vi);
-
-        if (IS_CUDA) {
-            if (!IsAligned(src, vi, env)) {
-                env->ThrowError("[SharpenFilter]: source filter returns unaligned frame [src] %dx%d(%p,%p,%p)[%d,%d,%d]-%d,%d",
-                    src.width, src.height,
-                    src.GetReadPtr<uint8_t>(PLANAR_Y), src.GetReadPtr<uint8_t>(PLANAR_U), src.GetReadPtr<uint8_t>(PLANAR_V),
-                    src.GetPitch<uint8_t>(PLANAR_Y), src.GetPitch<uint8_t>(PLANAR_U), src.GetPitch<uint8_t>(PLANAR_V),
-                    env->GetProperty(AEP_FRAME_ALIGN), env->GetProperty(AEP_PLANE_ALIGN));
-            }
-            if (!IsAligned(unsharp, vi, env)) {
-                env->ThrowError("[SharpenFilter]: source filter returns unaligned frame [unsharp] %dx%d(%p,%p,%p)[%d,%d,%d]-%d,%d",
-                    unsharp.width, unsharp.height,
-                    unsharp.GetReadPtr<uint8_t>(PLANAR_Y), unsharp.GetReadPtr<uint8_t>(PLANAR_U), unsharp.GetReadPtr<uint8_t>(PLANAR_V),
-                    unsharp.GetPitch<uint8_t>(PLANAR_Y), unsharp.GetPitch<uint8_t>(PLANAR_U), unsharp.GetPitch<uint8_t>(PLANAR_V),
-                    env->GetProperty(AEP_FRAME_ALIGN), env->GetProperty(AEP_PLANE_ALIGN));
-            }
-            if (!IsAligned(qp, vi, env)) {
-                env->ThrowError("[SharpenFilter]: source filter returns unaligned frame [qp] %dx%d(%p,%p,%p)[%d,%d,%d]-%d,%d",
-                    qp.width, qp.height,
-                    qp.GetReadPtr<uint8_t>(PLANAR_Y), qp.GetReadPtr<uint8_t>(PLANAR_U), qp.GetReadPtr<uint8_t>(PLANAR_V),
-                    qp.GetPitch<uint8_t>(PLANAR_Y), qp.GetPitch<uint8_t>(PLANAR_U), qp.GetPitch<uint8_t>(PLANAR_V),
-                    env->GetProperty(AEP_FRAME_ALIGN), env->GetProperty(AEP_PLANE_ALIGN));
-            }
-        }
 
         ProcPlane<pixel_t>(dst, src, unsharp, qp, coeff, PLANAR_Y, env);
         ProcPlane<pixel_t>(dst, src, unsharp, qp, coeff, PLANAR_U, env);
