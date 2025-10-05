@@ -15,8 +15,7 @@
 #include "rgy_simd.h"
 
 struct QPClipInfo {
-    enum
-    {
+    enum {
         VERSION = 1,
         MAGIC_KEY = 0x6180FDF8,
     };
@@ -30,11 +29,9 @@ struct QPClipInfo {
         : nMagicKey(MAGIC_KEY)
         , nVersion(VERSION)
         , imageWidth(vi.width)
-        , imageHeight(vi.height)
-    { }
+        , imageHeight(vi.height) {}
 
-    static const QPClipInfo* GetParam(const VideoInfo& vi, PNeoEnv env)
-    {
+    static const QPClipInfo* GetParam(const VideoInfo& vi, PNeoEnv env) {
         if (vi.sample_type != MAGIC_KEY) {
             env->ThrowError("Invalid source (sample_type signature does not match)");
         }
@@ -45,8 +42,7 @@ struct QPClipInfo {
         return param;
     }
 
-    static void SetParam(VideoInfo& vi, const QPClipInfo* param)
-    {
+    static void SetParam(VideoInfo& vi, const QPClipInfo* param) {
         vi.audio_samples_per_second = 0; // kill audio
         vi.sample_type = MAGIC_KEY;
         vi.num_audio_samples = (size_t)param;
@@ -54,14 +50,12 @@ struct QPClipInfo {
 };
 
 // 映像なしでQPだけのクリップ
-class QPClip : public GenericVideoFilter
-{
+class QPClip : public GenericVideoFilter {
     QPClipInfo info;
 public:
     QPClip(PClip clip, IScriptEnvironment* env)
         : GenericVideoFilter(clip)
-        , info(vi)
-    {
+        , info(vi) {
         QPClipInfo::SetParam(vi, &info);
 
         // フレーム自体はダミー
@@ -70,8 +64,7 @@ public:
         vi.pixel_type = VideoInfo::CS_Y8;
     }
 
-    PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env_)
-    {
+    PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env_) {
         PNeoEnv env = env_;
         PVideoFrame src = child->GetFrame(n, env);
         PVideoFrame dst = env->NewVideoFrame(vi);
@@ -89,8 +82,7 @@ public:
         return 0;
     }
 
-    static AVSValue __cdecl Create(AVSValue args, void* user_data, IScriptEnvironment* env)
-    {
+    static AVSValue __cdecl Create(AVSValue args, void* user_data, IScriptEnvironment* env) {
         return new QPClip(
             args[0].AsClip(),      // clip
             env
@@ -133,8 +125,7 @@ bool IsAVX2Available() {
 #define S2    1.4142135623730951f    // sqrt(2)
 
 template <int stride>
-__device__ __host__ void dev_dct8(float* data)
-{
+__device__ __host__ void dev_dct8(float* data) {
     // stage 1
     float a0 = data[7 * stride] + data[0 * stride];
     float a1 = data[6 * stride] + data[1 * stride];
@@ -187,8 +178,7 @@ __device__ __host__ void dev_dct8(float* data)
 }
 
 template <int stride>
-__device__ __host__ void dev_idct8(float* data)
-{
+__device__ __host__ void dev_idct8(float* data) {
     float c0 = data[0 * stride];
     float c1 = data[4 * stride];
     float c2 = data[2 * stride];
@@ -233,8 +223,7 @@ __device__ __host__ void dev_idct8(float* data)
     data[7 * stride] = a0 - a7;
 }
 
-__device__ void dev_dct8x8(int tx, float* data)
-{
+__device__ void dev_dct8x8(int tx, float* data) {
     dev_dct8<1>(data + tx * 9); // row
 #if CUDART_VERSION >= 9000
     __syncwarp();
@@ -245,8 +234,7 @@ __device__ void dev_dct8x8(int tx, float* data)
 #endif
 }
 
-__device__ void dev_idct8x8(int tx, float* data)
-{
+__device__ void dev_idct8x8(int tx, float* data) {
     dev_idct8<9>(data + tx);  // column
 #if CUDART_VERSION >= 9000
     __syncwarp();
@@ -257,24 +245,21 @@ __device__ void dev_idct8x8(int tx, float* data)
 #endif
 }
 
-__host__ void cpu_dct8x8(float* data)
-{
+__host__ void cpu_dct8x8(float* data) {
     for (int i = 0; i < 8; ++i)
         dev_dct8<1>(data + i * 8); // row
     for (int i = 0; i < 8; ++i)
         dev_dct8<8>(data + i);  // column
 }
 
-__host__ void cpu_idct8x8(float* data)
-{
+__host__ void cpu_idct8x8(float* data) {
     for (int i = 0; i < 8; ++i)
         dev_idct8<8>(data + i);  // column
     for (int i = 0; i < 8; ++i)
         dev_idct8<1>(data + i * 8); // row
 }
 
-__device__ void dev_hardthresh(int tx, float *data, float threshold)
-{
+__device__ void dev_hardthresh(int tx, float *data, float threshold) {
     for (int i = tx; i < 72; i += 8) {
         if (i == 0) continue;
         float level = data[i];
@@ -295,8 +280,7 @@ __device__ void dev_hardthresh(int tx, float *data, float threshold)
 //  }
 //}
 
-__host__ void cpu_hardthresh(float *data, float threshold)
-{
+__host__ void cpu_hardthresh(float *data, float threshold) {
     for (int i = 1; i < 64; ++i) {
         float level = data[i];
         if (abs(level) <= threshold) {
@@ -315,8 +299,7 @@ __host__ void cpu_hardthresh(float *data, float threshold)
 //  }
 //}
 
-__device__ __host__ float qp_apply_thresh(float qp, float thresh_a, float thresh_b)
-{
+__device__ __host__ float qp_apply_thresh(float qp, float thresh_a, float thresh_b) {
     return clamp(thresh_a * qp + thresh_b, 0.0f, qp);
 }
 
@@ -360,8 +343,7 @@ __global__ void kl_deblock(
     ushort2* out, int out_pitch,
     const uint16_t* __restrict__ qp_table, int qp_pitch,
     int count_minus_1, int shift, int maxv,
-    float strength, float thresh_a, float thresh_b)
-{
+    float strength, float thresh_a, float thresh_b) {
     int tx = threadIdx.x; // 8
     int ty = threadIdx.y; // count
 
@@ -429,8 +411,7 @@ void cpu_deblock(
     uint16_t* out, int out_pitch,
     const uint16_t* qp_table, int qp_pitch,
     int count_minus_1, int shift, int maxv,
-    float strength, float thresh_a, float thresh_b)
-{
+    float strength, float thresh_a, float thresh_b) {
     for (int by = 0; by < bh; ++by) {
         for (int bx = 0; bx < bw; ++bx) {
             uint16_t local_out[16][16];
@@ -505,8 +486,7 @@ __global__ void kl_deblock_show(
     int width, int height,
     int bw, int bh,
     const uint16_t* qp_table, int qp_pitch,
-    float thresh_a, float thresh_b)
-{
+    float thresh_a, float thresh_b) {
     uint16_t qp = qp_table[blockIdx.x + blockIdx.y * qp_pitch];
     bool is_enabled = (qp_apply_thresh(qp, thresh_a, thresh_b) >= (qp >> 1));
     int off_x = blockIdx.x * 8 - 4;
@@ -524,8 +504,7 @@ void cpu_deblock_show(
     int width, int height,
     int bw, int bh,
     const uint16_t* qp_table, int qp_pitch,
-    float thresh_a, float thresh_b)
-{
+    float thresh_a, float thresh_b) {
     for (int by = 0; by < bh; ++by) {
         for (int bx = 0; bx < bw; ++bx) {
             uint16_t qp = qp_table[bx + by * qp_pitch];
@@ -548,8 +527,7 @@ void cpu_deblock_show(
 // normalize the qscale factor
 // ffmpegはmpeg1に合わせているが値が小さいのでh264に合わせるようにした
 //（ffmpegの4倍の値が返る）
-__device__ __host__ inline int norm_qscale(int qscale, int type)
-{
+__device__ __host__ inline int norm_qscale(int qscale, int type) {
     switch (type) {
     case 0/*FF_QSCALE_TYPE_MPEG1*/: return qscale << 2;
     case 1/*FF_QSCALE_TYPE_MPEG2*/: return qscale << 1;
@@ -568,8 +546,7 @@ __global__ void kl_make_qp_table(
     const uint8_t* dc_table0, const uint8_t* dc_table1, int dc_pitch,
     int qp_shift_x, int qp_shift_y,
     int out_width, int out_height,
-    uint16_t* out_table, int out_pitch)
-{
+    uint16_t* out_table, int out_pitch) {
     int x = threadIdx.x + blockIdx.x * blockDim.x;
     int y = threadIdx.y + blockIdx.y * blockDim.y;
 
@@ -605,8 +582,7 @@ void cpu_make_qp_table(
     const uint8_t* dc_table0, const uint8_t* dc_table1, int dc_pitch,
     int qp_shift_x, int qp_shift_y,
     int out_width, int out_height,
-    uint16_t* out_table, int out_pitch)
-{
+    uint16_t* out_table, int out_pitch) {
     for (int y = 0; y < out_height; ++y) {
         for (int x = 0; x < out_width; ++x) {
             int qp;
@@ -652,8 +628,7 @@ template <typename vpixel_t>
 __global__ void kl_merge_deblock(
     int width, int height,
     const ushort4 *tmp, int tmp_pitch, int tmp_ipitch,
-    vpixel_t* out, int out_pitch, int shift, float maxv)
-{
+    vpixel_t* out, int out_pitch, int shift, float maxv) {
     int x = threadIdx.x + blockIdx.x * blockDim.x;
     int y = threadIdx.y + blockIdx.y * blockDim.y;
 
@@ -672,8 +647,7 @@ template <typename vpixel_t>
 void cpu_merge_deblock(
     int width, int height,
     const ushort4 *tmp, int tmp_pitch, int tmp_ipitch,
-    vpixel_t* out, int out_pitch, int shift, float maxv)
-{
+    vpixel_t* out, int out_pitch, int shift, float maxv) {
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
             auto sum = to_int(tmp[x + (tmp_ipitch * 0 + y) * tmp_pitch]) +
@@ -709,8 +683,7 @@ void cpu_deblock_avx(
     float strength, float thresh_a, float thresh_b,
 
     int width, int height,
-    pixel_t* dst, int dst_pitch, int mergeShift, int mergeMaxV)
-{
+    pixel_t* dst, int dst_pitch, int mergeShift, int mergeMaxV) {
     auto store_slice = get_store_slice_avx_func<pixel_t>(mergeShift);
     for (int by = 0; by < bh; ++by) {
         memset(&tmp[(by + 1) * 8 * tmp_pitch], 0, tmp_pitch * 8 * sizeof(uint16_t)); // dst初期化
@@ -746,8 +719,7 @@ void cpu_deblock_avx(
 }
 
 template <int RADIUS>
-__global__ void kl_max_vh(uint8_t* dst, uint8_t* src, int width, int height, int pitch)
-{
+__global__ void kl_max_vh(uint8_t* dst, uint8_t* src, int width, int height, int pitch) {
     int x = threadIdx.x + blockIdx.x * blockDim.x;
     int y = threadIdx.y + blockIdx.y * blockDim.y;
 
@@ -763,8 +735,7 @@ __global__ void kl_max_vh(uint8_t* dst, uint8_t* src, int width, int height, int
 }
 
 template <int RADIUS>
-__global__ void kl_max_v(uchar4* dst, uchar4* src, int width, int height, int pitch)
-{
+__global__ void kl_max_v(uchar4* dst, uchar4* src, int width, int height, int pitch) {
     int x = threadIdx.x + blockIdx.x * blockDim.x;
     int y = threadIdx.y + blockIdx.y * blockDim.y;
 
@@ -778,8 +749,7 @@ __global__ void kl_max_v(uchar4* dst, uchar4* src, int width, int height, int pi
 }
 
 template <int RADIUS>
-void cpu_max_v(uchar4* dst, uchar4* src, int width, int height, int pitch)
-{
+void cpu_max_v(uchar4* dst, uchar4* src, int width, int height, int pitch) {
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
             uchar4 sum = make_uchar4(0, 0, 0, 0);
@@ -792,8 +762,7 @@ void cpu_max_v(uchar4* dst, uchar4* src, int width, int height, int pitch)
 }
 
 template <int RADIUS>
-__global__ void kl_max_h(uint8_t* dst, uint8_t* src, int width, int height, int pitch)
-{
+__global__ void kl_max_h(uint8_t* dst, uint8_t* src, int width, int height, int pitch) {
     int x = threadIdx.x + blockIdx.x * blockDim.x;
     int y = threadIdx.y + blockIdx.y * blockDim.y;
 
@@ -807,8 +776,7 @@ __global__ void kl_max_h(uint8_t* dst, uint8_t* src, int width, int height, int 
 }
 
 template <int RADIUS>
-void cpu_max_h(uint8_t* dst, uint8_t* src, int width, int height, int pitch)
-{
+void cpu_max_h(uint8_t* dst, uint8_t* src, int width, int height, int pitch) {
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
             uint8_t sum = { 0 };
@@ -829,8 +797,7 @@ enum QP_RESULT_FLAG {
     QP_TABLE_USING_DC,
 };
 
-class QPForDeblock : public KFMFilterBase
-{
+class QPForDeblock : public KFMFilterBase {
     VideoInfo srcvi;
     PClip qpclip;
     float frameRateConv; // (qpclip frame rate) / (source frame rate)
@@ -845,8 +812,7 @@ class QPForDeblock : public KFMFilterBase
         const uint8_t* qpTable0, const uint8_t* qpTableNonB0, Frame dc0,
         const uint8_t* qpTable1, const uint8_t* qpTableNonB1, Frame dc1,
         int qpStride, int qpScaleType,
-        int qpShiftX, int qpShiftY, PNeoEnv env)
-    {
+        int qpShiftX, int qpShiftY, PNeoEnv env) {
         float dc_coeff = b_ratio / 255.0f;
         int qp_width = (width + 7 + 8) >> 3;
         int qp_height = (height + 7 + 8) >> 3;
@@ -855,7 +821,7 @@ class QPForDeblock : public KFMFilterBase
             cudaStream_t stream = static_cast<cudaStream_t>(env->GetDeviceStream());
             dim3 threads(32, 8);
             dim3 blocks(nblocks(qp_width, threads.x), nblocks(qp_height, threads.y));
-            kl_make_qp_table <<<blocks, threads, 0, stream>>> (
+            kl_make_qp_table<<<blocks, threads, 0, stream>>>(
                 (srcvi.width + 15) >> 4, (srcvi.height + 15) >> 4,
                 qpTable0, qpTableNonB0, qpTable1, qpTableNonB1,
                 qpStride, qpTable0 ? qpScaleType : force_qp, dc_coeff,
@@ -873,8 +839,7 @@ class QPForDeblock : public KFMFilterBase
         }
     }
 
-    Frame MakeMask(PVideoFrame dcframe, PNeoEnv env)
-    {
+    Frame MakeMask(PVideoFrame dcframe, PNeoEnv env) {
         typedef typename VectorType<uint8_t>::type vpixel_t;
         cudaStream_t stream = static_cast<cudaStream_t>(env->GetDeviceStream());
 
@@ -894,18 +859,18 @@ class QPForDeblock : public KFMFilterBase
             if (true) {
                 dim3 threads(32, 8);
                 dim3 blocks(nblocks(width + 2 * 8, threads.x * 4), nblocks(height + 2 * 8, threads.y));
-                kl_copy_pad<vpixel_t> <<<blocks, threads, 0, stream>>> (pad.GetWritePtr<vpixel_t>() + 2 + 8 * pad.GetPitch<vpixel_t>(),
+                kl_copy_pad<vpixel_t><<<blocks, threads, 0, stream>>>(pad.GetWritePtr<vpixel_t>() + 2 + 8 * pad.GetPitch<vpixel_t>(),
                     pad.GetPitch<vpixel_t>(), (vpixel_t *)dcframe->GetReadPtr(), dcframe->GetPitch() >> 2, width >> 2, height, 8 >> 2, 8);
                 DEBUG_SYNC;
             } else {
                 Copy(pad.GetWritePtr<uint8_t>() + 8 + 8 * pad.GetPitch<uint8_t>(),
                     pad.GetPitch<uint8_t>(), dcframe->GetReadPtr(), dcframe->GetPitch(),
                     width, height, env);
-                kl_padv<vpixel_t> << <dim3(nblocks(width4, 32)), dim3(32, 8), 0, stream >> > (
+                kl_padv<vpixel_t><<<dim3(nblocks(width4, 32)), dim3(32, 8), 0, stream>>>(
                     pad.GetWritePtr<vpixel_t>() + 2 + 8 * pad.GetPitch<vpixel_t>(),
                     width4, height, pad.GetPitch<vpixel_t>(), 8);
                 DEBUG_SYNC;
-                kl_padh<uint8_t> << <dim3(1, nblocks(height + 8 * 2, 32)), dim3(8, 32), 0, stream >> > (
+                kl_padh<uint8_t><<<dim3(1, nblocks(height + 8 * 2, 32)), dim3(8, 32), 0, stream>>>(
                     pad.GetWritePtr<uint8_t>() + 8, width, height + 8 * 2,
                     pad.GetPitch<uint8_t>(), 8);
                 DEBUG_SYNC;
@@ -924,18 +889,18 @@ class QPForDeblock : public KFMFilterBase
 
         if (IS_CUDA) {
             if (true) {
-                kl_max_vh<5> <<<dim3(nblocks(width, 32), nblocks(height, 8)), dim3(32, 8), 0, stream >>> (
+                kl_max_vh<5><<<dim3(nblocks(width, 32), nblocks(height, 8)), dim3(32, 8), 0, stream>>>(
                     tmp.GetWritePtr<uint8_t>() + 8 + 8 * tmp.GetPitch<uint8_t>(),
                     pad.GetWritePtr<uint8_t>() + 8 + 8 * pad.GetPitch<uint8_t>(),
                     width, height, pad.GetPitch<uint8_t>());
                 DEBUG_SYNC;
             } else {
-                kl_max_v<5> << <dim3(nblocks(width4, 32), nblocks(height, 8)), dim3(32, 8), 0, stream >> > (
+                kl_max_v<5><<<dim3(nblocks(width4, 32), nblocks(height, 8)), dim3(32, 8), 0, stream>>>(
                     tmp.GetWritePtr<vpixel_t>() + 2 + 8 * tmp.GetPitch<vpixel_t>(),
                     pad.GetWritePtr<vpixel_t>() + 2 + 8 * pad.GetPitch<vpixel_t>(),
                     width4, height, pad.GetPitch<vpixel_t>());
                 DEBUG_SYNC;
-                kl_max_h<5> << <dim3(nblocks(width, 32), nblocks(height, 8)), dim3(32, 8), 0, stream >> > (
+                kl_max_h<5><<<dim3(nblocks(width, 32), nblocks(height, 8)), dim3(32, 8), 0, stream>>>(
                     pad.GetWritePtr<uint8_t>() + 8 + 8 * pad.GetPitch<uint8_t>(),
                     tmp.GetWritePtr<uint8_t>() + 8 + 8 * tmp.GetPitch<uint8_t>(),
                     width, height, pad.GetPitch<uint8_t>());
@@ -958,8 +923,7 @@ class QPForDeblock : public KFMFilterBase
     PVideoFrame QPEntry(
         const uint8_t* qpTable0, const uint8_t* qpTableNonB0, PVideoFrame dc0,
         const uint8_t* qpTable1, const uint8_t* qpTableNonB1, PVideoFrame dc1,
-        int qpStride, int qpScaleType, PNeoEnv env)
-    {
+        int qpStride, int qpScaleType, PNeoEnv env) {
         Frame dst = env->NewVideoFrame(vi);
         Frame bmask0 = dc0 ? MakeMask(dc0, env) : Frame();
         Frame bmask1 = dc1 ? MakeMask(dc1, env) : Frame();
@@ -987,8 +951,7 @@ class QPForDeblock : public KFMFilterBase
     }
 
     // QPテーブルのフレーム指定
-    PVideoFrame QPEntry(PVideoFrame& qp0, PVideoFrame& qp1, PNeoEnv env)
-    {
+    PVideoFrame QPEntry(PVideoFrame& qp0, PVideoFrame& qp1, PNeoEnv env) {
 #if AVISYNTH_MODE == AVISYNTH_NEO
         if (qp0->GetProperty("QP_Table_Non_B") == nullptr) {
             // QPテーブルがない
@@ -1010,8 +973,8 @@ class QPForDeblock : public KFMFilterBase
             return dst.frame;
         }
         auto OptGetFrame = [](PVideoFrame value) {
-          return value ? value : nullptr;
-        };
+            return value ? value : nullptr;
+            };
 #else
         static_assert(false, "Invalid AVISYNTH_MODE");
 #endif
@@ -1057,8 +1020,7 @@ class QPForDeblock : public KFMFilterBase
             qpStride, qpScaleType, env);
     }
 
-    PVideoFrame GetQPFrame(int n, PNeoEnv env)
-    {
+    PVideoFrame GetQPFrame(int n, PNeoEnv env) {
         if (qpclip) {
             return qpclip->GetFrame(n, env);
         }
@@ -1072,8 +1034,7 @@ public:
         , qpclip(qpclip)
         , b_ratio(b_ratio)
         , force_qp(force_qp)
-        , b_adap(b_adap)
-    {
+        , b_adap(b_adap) {
         if (vi.width & 7) env->ThrowError("[KDeblock]: width must be multiple of 8");
         if (vi.height & 7) env->ThrowError("[KDeblock]: height must be multiple of 8");
 
@@ -1096,8 +1057,7 @@ public:
         vi.pixel_type = Get16BitType(vi);
     }
 
-    PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env_)
-    {
+    PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env_) {
         PNeoEnv env = env_;
         Frame src = child->GetFrame(n, env);
 
@@ -1123,44 +1083,44 @@ public:
         static_assert(false, "Invalid AVISYNTH_MODE");
 #endif
 
-            // 想定されるフレームと離れすぎてたらバグの可能性が高いので検出
-            int qp_n = (int)(frameRateConv * n + 0.3f);
-            if (start < qp_n - 10 || start > qp_n + 10) {
-                env->ThrowError("Invalid KFM_SourceStart");
-            }
-
-            PVideoFrame dst;
-            if (num <= 1) {
-                PVideoFrame qp0 = GetQPFrame(start, env);
-                PVideoFrame qp1 = PVideoFrame();
-                dst = QPEntry(qp0, qp1, env);
-            } else {
-                PVideoFrame qp0 = GetQPFrame(start, env);
-                PVideoFrame qp1 = GetQPFrame(start + 1, env);
-                dst = QPEntry(qp0, qp1, env);
-            }
-            return dst;
+        // 想定されるフレームと離れすぎてたらバグの可能性が高いので検出
+        int qp_n = (int)(frameRateConv * n + 0.3f);
+        if (start < qp_n - 10 || start > qp_n + 10) {
+            env->ThrowError("Invalid KFM_SourceStart");
         }
 
-        if (qpclip) {
-            // QPクリップ指定あり
-            int qp_n = (int)(frameRateConv * n + 0.3f);
-            PVideoFrame qp0 = GetQPFrame(qp_n, env);
+        PVideoFrame dst;
+        if (num <= 1) {
+            PVideoFrame qp0 = GetQPFrame(start, env);
             PVideoFrame qp1 = PVideoFrame();
-            return QPEntry(qp0, qp1, env);
+            dst = QPEntry(qp0, qp1, env);
+        } else {
+            PVideoFrame qp0 = GetQPFrame(start, env);
+            PVideoFrame qp1 = GetQPFrame(start + 1, env);
+            dst = QPEntry(qp0, qp1, env);
+        }
+        return dst;
         }
 
-        // ソースフレームからQP取得
+    if (qpclip) {
+        // QPクリップ指定あり
+        int qp_n = (int)(frameRateConv * n + 0.3f);
+        PVideoFrame qp0 = GetQPFrame(qp_n, env);
         PVideoFrame qp1 = PVideoFrame();
-        return QPEntry(src.frame, qp1, env);
+        return QPEntry(qp0, qp1, env);
     }
 
-    int __stdcall SetCacheHints(int cachehints, int frame_range) {
-        if (cachehints == CACHE_GET_MTMODE) {
-            return MT_NICE_FILTER;
-        }
-        return KFMFilterBase::SetCacheHints(cachehints, frame_range);
+    // ソースフレームからQP取得
+    PVideoFrame qp1 = PVideoFrame();
+    return QPEntry(src.frame, qp1, env);
     }
+
+int __stdcall SetCacheHints(int cachehints, int frame_range) {
+    if (cachehints == CACHE_GET_MTMODE) {
+        return MT_NICE_FILTER;
+    }
+    return KFMFilterBase::SetCacheHints(cachehints, frame_range);
+}
 };
 
 __constant__ uint8_t d_sharpen_coeff[] = {
@@ -1182,8 +1142,7 @@ uint8_t g_sharpen_coeff[] = {
 };
 
 __global__ void kl_sharpen_coeff(uint8_t* dst,
-    int width, int height, int pitch, const uint16_t* qp, int qpPitch)
-{
+    int width, int height, int pitch, const uint16_t* qp, int qpPitch) {
     int x = threadIdx.x + blockIdx.x * blockDim.x;
     int y = threadIdx.y + blockIdx.y * blockDim.y;
 
@@ -1194,8 +1153,7 @@ __global__ void kl_sharpen_coeff(uint8_t* dst,
 }
 
 void cpu_sharpen_coeff(uint8_t* dst,
-    int width, int height, int pitch, const uint16_t* qp, int qpPitch)
-{
+    int width, int height, int pitch, const uint16_t* qp, int qpPitch) {
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
             int q = qp[x + y * qpPitch] >> 3;
@@ -1206,8 +1164,7 @@ void cpu_sharpen_coeff(uint8_t* dst,
 
 template <typename pixel_t>
 __global__ void kl_sharpen(pixel_t* dst, int width, int height, int pitch,
-    const pixel_t* src, int srcPitch, cudaTextureObject_t coeff, const pixel_t* unsharp)
-{
+    const pixel_t* src, int srcPitch, cudaTextureObject_t coeff, const pixel_t* unsharp) {
     int x = threadIdx.x + blockIdx.x * blockDim.x;
     int y = threadIdx.y + blockIdx.y * blockDim.y;
 
@@ -1217,19 +1174,19 @@ __global__ void kl_sharpen(pixel_t* dst, int width, int height, int pitch,
         int h = s;
         int v;
 
-        v = src[max(x - 1, 0)          + max(y - 1, 0) * srcPitch];
+        v = src[max(x - 1, 0) + max(y - 1, 0) * srcPitch];
         l = min(l, v); h = max(h, v);
-        v = src[   (x + 0)             + max(y - 1, 0) * srcPitch];
+        v = src[(x + 0) + max(y - 1, 0) * srcPitch];
         l = min(l, v); h = max(h, v);
         v = src[min(x + 1, height - 1) + max(y - 1, 0) * srcPitch];
         l = min(l, v); h = max(h, v);
-        v = src[max(x - 1, 0)          + (y + 0) * srcPitch];
+        v = src[max(x - 1, 0) + (y + 0) * srcPitch];
         l = min(l, v); h = max(h, v);
         v = src[min(x + 1, height - 1) + (y + 0) * srcPitch];
         l = min(l, v); h = max(h, v);
-        v = src[max(x - 1, 0)          + min(y + 1, height - 1) * srcPitch];
+        v = src[max(x - 1, 0) + min(y + 1, height - 1) * srcPitch];
         l = min(l, v); h = max(h, v);
-        v = src[   (x + 0)             + min(y + 1, height - 1) * srcPitch];
+        v = src[(x + 0) + min(y + 1, height - 1) * srcPitch];
         l = min(l, v); h = max(h, v);
         v = src[min(x + 1, height - 1) + min(y + 1, height - 1) * srcPitch];
         l = min(l, v); h = max(h, v);
@@ -1242,8 +1199,7 @@ __global__ void kl_sharpen(pixel_t* dst, int width, int height, int pitch,
 
 template <typename pixel_t>
 void cpu_sharpen(pixel_t* dst, int width, int height, int pitch,
-    const pixel_t* src, const uint8_t* coeff, int coeffPitch, const pixel_t* unsharp)
-{
+    const pixel_t* src, const uint8_t* coeff, int coeffPitch, const pixel_t* unsharp) {
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
             int s = src[x + y * pitch];
@@ -1313,8 +1269,7 @@ void cpu_sharpen(pixel_t* dst, int width, int height, int pitch,
 
 template <typename pixel_t>
 __global__ void kl_show_sharpen_coeff(pixel_t* dst, int width, int height, int pitch,
-    cudaTextureObject_t coeff)
-{
+    cudaTextureObject_t coeff) {
     int x = threadIdx.x + blockIdx.x * blockDim.x;
     int y = threadIdx.y + blockIdx.y * blockDim.y;
 
@@ -1326,8 +1281,7 @@ __global__ void kl_show_sharpen_coeff(pixel_t* dst, int width, int height, int p
 
 template <typename pixel_t>
 void cpu_show_sharpen_coeff(pixel_t* dst, int width, int height, int pitch,
-    const uint8_t* coeff, int coeffPitch)
-{
+    const uint8_t* coeff, int coeffPitch) {
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
             float fx = x * (1.0f / 8.0f);
@@ -1353,8 +1307,7 @@ template<> cudaChannelFormatDesc TextureFormat<uint16_t>::desc = { 16, 0, 0, 0, 
 
 template <typename pixel_t>
 cudaResourceDesc makeResourceDesc(
-    const pixel_t *ptr, int width, int height, int pitch)
-{
+    const pixel_t *ptr, int width, int height, int pitch) {
     cudaResourceDesc resDesc = cudaResourceDesc();
     resDesc.resType = cudaResourceTypePitch2D;
     resDesc.res.pitch2D.devPtr = const_cast<pixel_t*>(ptr);
@@ -1368,8 +1321,7 @@ cudaResourceDesc makeResourceDesc(
 cudaTextureDesc makeTextureDesc(
     cudaTextureAddressMode addressMode,
     cudaTextureFilterMode filterMode,
-    cudaTextureReadMode readMode)
-{
+    cudaTextureReadMode readMode) {
     cudaTextureDesc texDesc = cudaTextureDesc();
     texDesc.addressMode[0] = addressMode;
     texDesc.addressMode[1] = addressMode;
@@ -1378,8 +1330,7 @@ cudaTextureDesc makeTextureDesc(
     return texDesc;
 }
 
-class TextureObject
-{
+class TextureObject {
     cudaTextureObject_t obj;
 public:
     TextureObject(cudaResourceDesc res, cudaTextureDesc tex, PNeoEnv env) {
@@ -1393,8 +1344,7 @@ public:
     }
 };
 
-class SharpenFilter : public KFMFilterBase
-{
+class SharpenFilter : public KFMFilterBase {
     PClip qpclip;
     PClip unsharpclip;
 
@@ -1403,8 +1353,7 @@ class SharpenFilter : public KFMFilterBase
     VideoInfo coeffvi;
 
     template <typename pixel_t>
-    void ProcPlane(Frame& dst, Frame& src, Frame& unsharp, Frame& qp, Frame& coeff, int plane, PNeoEnv env)
-    {
+    void ProcPlane(Frame& dst, Frame& src, Frame& unsharp, Frame& qp, Frame& coeff, int plane, PNeoEnv env) {
         bool isUV = (plane != PLANAR_Y);
         int shiftx = isUV ? vi.GetPlaneWidthSubsampling(PLANAR_U) : 0;
         int shifty = isUV ? vi.GetPlaneHeightSubsampling(PLANAR_U) : 0;
@@ -1419,7 +1368,7 @@ class SharpenFilter : public KFMFilterBase
                 // qp -> coeff 変換
                 dim3 threads(32, 8);
                 dim3 blocks(nblocks(qpw, threads.x), nblocks(qph, threads.y));
-                kl_sharpen_coeff <<<blocks, threads, 0, stream>>> (
+                kl_sharpen_coeff<<<blocks, threads, 0, stream>>>(
                     coeff.GetWritePtr<uint8_t>(plane), qpw, qph, coeff.GetPitch<uint8_t>(plane),
                     qp.GetReadPtr<uint16_t>(plane), qp.GetPitch<uint16_t>(plane));
                 DEBUG_SYNC;
@@ -1434,11 +1383,11 @@ class SharpenFilter : public KFMFilterBase
                 dim3 blocks(nblocks(width, threads.x), nblocks(height, threads.y));
 
                 if (show) {
-                    kl_show_sharpen_coeff <<<blocks, threads, 0, stream>>> (
+                    kl_show_sharpen_coeff<<<blocks, threads, 0, stream>>>(
                         dst.GetWritePtr<pixel_t>(plane), width, height, dst.GetPitch<pixel_t>(plane), texCoeff);
                     DEBUG_SYNC;
                 } else {
-                    kl_sharpen <<<blocks, threads, 0, stream>>> (
+                    kl_sharpen<<<blocks, threads, 0, stream>>>(
                         dst.GetWritePtr<pixel_t>(plane), width, height, dst.GetPitch<pixel_t>(plane),
                         src.GetReadPtr<pixel_t>(plane), src.GetPitch<pixel_t>(plane), texCoeff, unsharp.GetReadPtr<pixel_t>(plane));
                     DEBUG_SYNC;
@@ -1464,8 +1413,7 @@ class SharpenFilter : public KFMFilterBase
     }
 
     template <typename pixel_t>
-    PVideoFrame GetFrameT(int n, PNeoEnv env)
-    {
+    PVideoFrame GetFrameT(int n, PNeoEnv env) {
         typedef typename VectorType<uint8_t>::type vpixel_t;
 
         Frame src = child->GetFrame(n, env);
@@ -1486,16 +1434,14 @@ public:
         : KFMFilterBase(source, env)
         , qpclip(qpclip)
         , unsharpclip(unsharp)
-        , show(show)
-    {
+        , show(show) {
         if (vi.width & 7) env->ThrowError("[SharpenFilter]: width must be multiple of 8");
 
         coeffvi = qpclip->GetVideoInfo();
         coeffvi.pixel_type = Get8BitType(coeffvi);
     }
 
-    PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env_)
-    {
+    PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env_) {
         PNeoEnv env = env_;
 
         int pixelSize = vi.ComponentSize();
@@ -1519,8 +1465,7 @@ public:
     }
 };
 
-class KDeblock : public KFMFilterBase
-{
+class KDeblock : public KFMFilterBase {
     PClip qpclip;
 
     int quality;
@@ -1535,8 +1480,7 @@ class KDeblock : public KFMFilterBase
     void DeblockPlane(
         int width, int height,
         pixel_t* dst, int dstPitch, const pixel_t* src, int srcPitch,
-        const uint16_t* qpTmp, int qpTmpPitch, PNeoEnv env)
-    {
+        const uint16_t* qpTmp, int qpTmpPitch, PNeoEnv env) {
         typedef typename VectorType<pixel_t>::type vpixel_t;
         cudaStream_t stream = static_cast<cudaStream_t>(env->GetDeviceStream());
 
@@ -1553,18 +1497,18 @@ class KDeblock : public KFMFilterBase
         if (IS_CUDA) {
             if (true) {
                 dim3 threads(32, 8);
-                dim3 blocks(nblocks(width + 2*8, threads.x*4), nblocks(height + 2 * 8, threads.y));
+                dim3 blocks(nblocks(width + 2 * 8, threads.x * 4), nblocks(height + 2 * 8, threads.y));
                 kl_copy_pad<vpixel_t><<<blocks, threads, 0, stream>>>((vpixel_t *)(pad.GetWritePtr<pixel_t>() + 8 + 8 * pad.GetPitch<pixel_t>()),
                     pad.GetPitch<pixel_t>() >> 2, (vpixel_t *)src, srcPitch >> 2, width >> 2, height, 8 >> 2, 8);
                 DEBUG_SYNC;
             } else {
                 Copy(pad.GetWritePtr<pixel_t>() + 8 + 8 * pad.GetPitch<pixel_t>(),
                     pad.GetPitch<pixel_t>(), src, srcPitch, width, height, env);
-                kl_padv<vpixel_t> <<<dim3(nblocks(width >> 2, 32)), dim3(32, 8), 0, stream>>> (
+                kl_padv<vpixel_t><<<dim3(nblocks(width >> 2, 32)), dim3(32, 8), 0, stream>>>(
                     pad.GetWritePtr<vpixel_t>() + 2 + 8 * pad.GetPitch<vpixel_t>(),
                     width >> 2, height, pad.GetPitch<vpixel_t>(), 8);
                 DEBUG_SYNC;
-                kl_padh<pixel_t> <<<dim3(1, nblocks(height + 8 * 2, 32)), dim3(8, 32), 0, stream>>> (
+                kl_padh<pixel_t><<<dim3(1, nblocks(height + 8 * 2, 32)), dim3(8, 32), 0, stream>>>(
                     pad.GetWritePtr<pixel_t>() + 8, width, height + 8 * 2,
                     pad.GetPitch<pixel_t>(), 8);
                 DEBUG_SYNC;
@@ -1597,7 +1541,7 @@ class KDeblock : public KFMFilterBase
             if (IS_CUDA) {
                 dim3 threads(8, 8);
                 dim3 blocks(qpvi.width, qpvi.height);
-                kl_deblock_show <<<blocks, threads, 0, stream>>> (
+                kl_deblock_show<<<blocks, threads, 0, stream>>>(
                     dst, dstPitch, width, height, qpvi.width, qpvi.height,
                     qpTmp, qpTmpPitch, thresh_a, thresh_b);
                 DEBUG_SYNC;
@@ -1631,7 +1575,7 @@ class KDeblock : public KFMFilterBase
             if (IS_CUDA) {
                 dim3 threads(8, count);
                 dim3 blocks(qpvi.width, qpvi.height);
-                kl_deblock <<<blocks, threads, sizeof(float) * 72 * count, stream>>> (
+                kl_deblock<<<blocks, threads, sizeof(float) * 72 * count, stream>>>(
                     pad.GetReadPtr<pixel_t>(), pad.GetPitch<pixel_t>(),
                     qpvi.width, qpvi.height,
                     tmpOut.GetWritePtr<ushort2>(), tmpOut.GetPitch<ushort2>(),
@@ -1649,7 +1593,7 @@ class KDeblock : public KFMFilterBase
             if (IS_CUDA) {
                 dim3 threads(32, 8);
                 dim3 blocks(nblocks(width >> 2, threads.x), nblocks(height, threads.y));
-                kl_merge_deblock <<<blocks, threads, 0, stream>>> (width >> 2, height,
+                kl_merge_deblock<<<blocks, threads, 0, stream>>>(width >> 2, height,
                     tmpOut.GetReadPtr<ushort4>() + 2 + 8 * tmpOut.GetPitch<ushort4>(),
                     tmpOut.GetPitch<ushort4>(), qpvi.height * 8,
                     (vpixel_t*)dst, dstPitch >> 2, mergeShift, (float)mergeMaxV);
@@ -1685,8 +1629,7 @@ class KDeblock : public KFMFilterBase
     }
 
     template <typename pixel_t>
-    PVideoFrame DeblockEntry(Frame& src, Frame& qp, PNeoEnv env)
-    {
+    PVideoFrame DeblockEntry(Frame& src, Frame& qp, PNeoEnv env) {
 #if AVISYNTH_MODE == AVISYNTH_NEO
         int qpflag = (int)qp.GetProperty("DEBLOCK_QP_FLAG")->GetInt();
 #elif AVISYNTH_MODE == AVISYNTH_PLUS
@@ -1736,8 +1679,7 @@ class KDeblock : public KFMFilterBase
         return dst.frame;
     }
 
-    PVideoFrame GetQPFrame(int n, PNeoEnv env)
-    {
+    PVideoFrame GetQPFrame(int n, PNeoEnv env) {
         if (qpclip) {
             return qpclip->GetFrame(n, env);
         }
@@ -1745,8 +1687,7 @@ class KDeblock : public KFMFilterBase
     }
 
     template <typename pixel_t>
-    PVideoFrame GetFrameT(int n, PNeoEnv env)
-    {
+    PVideoFrame GetFrameT(int n, PNeoEnv env) {
         Frame src = child->GetFrame(n, env);
         Frame qp = qpclip->GetFrame(n, env);
         return DeblockEntry<pixel_t>(src, qp, env);
@@ -1760,8 +1701,7 @@ public:
         , quality(quality)
         , strength(strength)
         , qp_thresh(qp_thresh)
-        , show(show)
-    {
+        , show(show) {
         if (vi.width & 7) env->ThrowError("[KDeblock]: width must be multiple of 8");
         if (vi.height & 7) env->ThrowError("[KDeblock]: height must be multiple of 8");
 
@@ -1770,8 +1710,7 @@ public:
         thresh_b = (W * W - qp_thresh * qp_thresh) / (2 * W);
     }
 
-    PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env_)
-    {
+    PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env_) {
         PNeoEnv env = env_;
 
         int pixelSize = vi.ComponentSize();
@@ -1794,8 +1733,7 @@ public:
         return KFMFilterBase::SetCacheHints(cachehints, frame_range);
     }
 
-    static AVSValue __cdecl Create(AVSValue args, void* user_data, IScriptEnvironment* env)
-    {
+    static AVSValue __cdecl Create(AVSValue args, void* user_data, IScriptEnvironment* env) {
         // 1: 左上に情報を表示
         // 2: デブロッキング領域を表示
         // 3: シャープ化領域を表示
@@ -1836,8 +1774,7 @@ public:
 };
 
 __global__ void kl_scale_qp(int width, int height,
-    uint8_t* dst, int dst_pitch, const uint8_t* src, int src_pitch, int scale_type)
-{
+    uint8_t* dst, int dst_pitch, const uint8_t* src, int src_pitch, int scale_type) {
     int x = threadIdx.x + blockIdx.x * blockDim.x;
     int y = threadIdx.y + blockIdx.y * blockDim.y;
     if (x < width && y < height) {
@@ -1846,8 +1783,7 @@ __global__ void kl_scale_qp(int width, int height,
 }
 
 void cpu_scale_qp(int width, int height,
-    uint8_t* dst, int dst_pitch, const uint8_t* src, int src_pitch, int scale_type)
-{
+    uint8_t* dst, int dst_pitch, const uint8_t* src, int src_pitch, int scale_type) {
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
             dst[x + y * dst_pitch] = norm_qscale(src[x + y * src_pitch], scale_type);
@@ -1856,16 +1792,14 @@ void cpu_scale_qp(int width, int height,
 }
 
 // QPテーブルをフレームデータに変換
-class ShowQP : public GenericVideoFilter
-{
+class ShowQP : public GenericVideoFilter {
     bool nonB;
     bool dc;
 public:
     ShowQP(PClip clip, bool nonB, bool dc, IScriptEnvironment* env_)
         : GenericVideoFilter(clip)
         , nonB(nonB)
-        , dc(dc)
-    {
+        , dc(dc) {
         PNeoEnv env = env_;
 
         vi.pixel_type = VideoInfo::CS_Y8;
@@ -1881,8 +1815,7 @@ public:
         }
     }
 
-    PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env_)
-    {
+    PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env_) {
         PNeoEnv env = env_;
         Frame src = child->GetFrame(n, env);
         Frame dst = env->NewVideoFrame(vi);
@@ -1898,63 +1831,63 @@ public:
 #else
             static_assert(false, "Invalid AVISYNTH_MODE");
 #endif
-                cpu_fill<uint8_t, 0>(dst.GetWritePtr<uint8_t>(), vi.width, vi.height, dst.GetPitch<uint8_t>());
-                DrawText<uint8_t>(dst.frame, 8, 0, 0, "No DC table ...", env);
+            cpu_fill<uint8_t, 0>(dst.GetWritePtr<uint8_t>(), vi.width, vi.height, dst.GetPitch<uint8_t>());
+            DrawText<uint8_t>(dst.frame, 8, 0, 0, "No DC table ...", env);
             } else {
 #if AVISYNTH_MODE == AVISYNTH_NEO
-                Frame dcTable = prop->GetFrame();
+            Frame dcTable = prop->GetFrame();
 #elif AVISYNTH_MODE == AVISYNTH_PLUS
-                Frame dcTable = propFrame;
-#else
-                static_assert(false, "Invalid AVISYNTH_MODE");
-#endif
-                Copy<uint8_t>(dst.GetWritePtr<uint8_t>(), dst.GetPitch<uint8_t>(),
-                    dcTable.GetReadPtr<uint8_t>(), dcTable.GetPitch<uint8_t>(), vi.width, vi.height, env);
-            }
-        } else {
-#if AVISYNTH_MODE == AVISYNTH_NEO
-            const AVSMapValue* prop = src.GetProperty(nonB ? "QP_Table_Non_B" : "QP_Table");
-            if (prop == nullptr) {
-#elif AVISYNTH_MODE == AVISYNTH_PLUS
-            int error;
-            auto avsmap = env->getFramePropsRO(src.frame);
-            PVideoFrame propFrame = env->propGetFrame(avsmap, nonB ? "QP_Table_Non_B" : "QP_Table", 0, &error);
-            if (error || propFrame == nullptr) {
+            Frame dcTable = propFrame;
 #else
             static_assert(false, "Invalid AVISYNTH_MODE");
 #endif
-                cpu_fill<uint8_t, 0>(dst.GetWritePtr<uint8_t>(), vi.width, vi.height, dst.GetPitch<uint8_t>());
-                DrawText<uint8_t>(dst.frame, 8, 0, 0, "No QP table ...", env);
-            } else {
+            Copy<uint8_t>(dst.GetWritePtr<uint8_t>(), dst.GetPitch<uint8_t>(),
+                dcTable.GetReadPtr<uint8_t>(), dcTable.GetPitch<uint8_t>(), vi.width, vi.height, env);
+        }
+        } else {
 #if AVISYNTH_MODE == AVISYNTH_NEO
-                Frame qpTable = prop->GetFrame();
-                int qpStride = (int)src.GetProperty("QP_Stride")->GetInt();
-                int qpScaleType = (int)src.GetProperty("QP_ScaleType")->GetInt();
+        const AVSMapValue* prop = src.GetProperty(nonB ? "QP_Table_Non_B" : "QP_Table");
+        if (prop == nullptr) {
 #elif AVISYNTH_MODE == AVISYNTH_PLUS
-                Frame qpTable = propFrame;
-                int qpStride = (int)env->propGetInt(avsmap, "QP_Stride", 0, &error);
-                int qpScaleType = (int)env->propGetInt(avsmap, "QP_ScaleType", 0, &error);
+        int error;
+        auto avsmap = env->getFramePropsRO(src.frame);
+        PVideoFrame propFrame = env->propGetFrame(avsmap, nonB ? "QP_Table_Non_B" : "QP_Table", 0, &error);
+        if (error || propFrame == nullptr) {
 #else
-                static_assert(false, "Invalid AVISYNTH_MODE");
+        static_assert(false, "Invalid AVISYNTH_MODE");
 #endif
-                if (IS_CUDA) {
-                    cudaStream_t stream = static_cast<cudaStream_t>(env->GetDeviceStream());
-                    dim3 threads(32, 8);
-                    dim3 blocks(nblocks(vi.width, threads.x), nblocks(vi.height, threads.y));
-                    kl_scale_qp <<<blocks, threads, 0, stream>>> (vi.width, vi.height,
-                        dst.GetWritePtr<uint8_t>(), dst.GetPitch<uint8_t>(),
-                        qpTable.GetReadPtr<uint8_t>(), qpStride, qpScaleType);
-                    DEBUG_SYNC;
-                } else {
-                    cpu_scale_qp(vi.width, vi.height,
-                        dst.GetWritePtr<uint8_t>(), dst.GetPitch<uint8_t>(),
-                        qpTable.GetReadPtr<uint8_t>(), qpStride, qpScaleType);
-                }
+        cpu_fill<uint8_t, 0>(dst.GetWritePtr<uint8_t>(), vi.width, vi.height, dst.GetPitch<uint8_t>());
+        DrawText<uint8_t>(dst.frame, 8, 0, 0, "No QP table ...", env);
+        } else {
+#if AVISYNTH_MODE == AVISYNTH_NEO
+            Frame qpTable = prop->GetFrame();
+            int qpStride = (int)src.GetProperty("QP_Stride")->GetInt();
+            int qpScaleType = (int)src.GetProperty("QP_ScaleType")->GetInt();
+#elif AVISYNTH_MODE == AVISYNTH_PLUS
+            Frame qpTable = propFrame;
+            int qpStride = (int)env->propGetInt(avsmap, "QP_Stride", 0, &error);
+            int qpScaleType = (int)env->propGetInt(avsmap, "QP_ScaleType", 0, &error);
+#else
+            static_assert(false, "Invalid AVISYNTH_MODE");
+#endif
+            if (IS_CUDA) {
+                cudaStream_t stream = static_cast<cudaStream_t>(env->GetDeviceStream());
+                dim3 threads(32, 8);
+                dim3 blocks(nblocks(vi.width, threads.x), nblocks(vi.height, threads.y));
+                kl_scale_qp<<<blocks, threads, 0, stream>>>(vi.width, vi.height,
+                    dst.GetWritePtr<uint8_t>(), dst.GetPitch<uint8_t>(),
+                    qpTable.GetReadPtr<uint8_t>(), qpStride, qpScaleType);
+                DEBUG_SYNC;
+            } else {
+                cpu_scale_qp(vi.width, vi.height,
+                    dst.GetWritePtr<uint8_t>(), dst.GetPitch<uint8_t>(),
+                    qpTable.GetReadPtr<uint8_t>(), qpStride, qpScaleType);
             }
         }
+    }
 
 
-        return dst.frame;
+return dst.frame;
     }
 
     int __stdcall SetCacheHints(int cachehints, int frame_range) {
@@ -1967,8 +1900,7 @@ public:
         return 0;
     }
 
-    static AVSValue __cdecl Create(AVSValue args, void* user_data, IScriptEnvironment* env)
-    {
+    static AVSValue __cdecl Create(AVSValue args, void* user_data, IScriptEnvironment * env) {
         return new ShowQP(
             args[0].AsClip(),      // clip
             args[1].AsBool(true),  // nonB
@@ -1978,8 +1910,7 @@ public:
     }
 };
 
-static AVSValue __cdecl FrameType(AVSValue args, void* user_data, IScriptEnvironment* env)
-{
+static AVSValue __cdecl FrameType(AVSValue args, void* user_data, IScriptEnvironment * env) {
     AVSValue clip = args[0];
     PClip child = clip.AsClip();
     VideoInfo vi = child->GetVideoInfo();
@@ -2008,8 +1939,7 @@ static AVSValue __cdecl FrameType(AVSValue args, void* user_data, IScriptEnviron
     return 0;
 }
 
-void AddFuncDeblock(IScriptEnvironment* env)
-{
+void AddFuncDeblock(IScriptEnvironment * env) {
     env->AddFunction("KDeblock", "c[quality]i[str]f[thr]f[bratio]f[qpclip]c[qp]i[badap]b[sharp]b[show]i", KDeblock::Create, 0);
     env->AddFunction("QPClip", "c", QPClip::Create, 0);
     env->AddFunction("ShowQP", "c[nonb]b[dc]b", ShowQP::Create, 0);
