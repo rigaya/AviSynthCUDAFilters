@@ -42,35 +42,75 @@ enum {
 #pragma region Super
 
 int PlaneHeightLuma(int src_height, int level, int yRatioUV, int vpad) {
+    // 階層レベルに応じたルマ平面の高さを計算
+    // level=0: 元の高さ, level=1: 1/2, level=2: 1/4, ...
     int height = src_height;
 
     for (int i = 1; i <= level; i++) {
+        // 各レベルで高さを1/2に縮小
+        // クロマサブサンプリング（yRatioUV）を考慮した計算
         height = vpad >= yRatioUV ? ((height / yRatioUV + 1) / 2) * yRatioUV : ((height / yRatioUV) / 2) * yRatioUV;
     }
     return height;
 }
 
 int PlaneWidthLuma(int src_width, int level, int xRatioUV, int hpad) {
+    // 階層レベルに応じたルマ平面の幅を計算
+    // level=0: 元の幅, level=1: 1/2, level=2: 1/4, ...
     int width = src_width;
 
     for (int i = 1; i <= level; i++) {
+        // 各レベルで幅を1/2に縮小
+        // クロマサブサンプリング（xRatioUV）を考慮した計算
         width = hpad >= xRatioUV ? ((width / xRatioUV + 1) / 2) * xRatioUV : ((width / xRatioUV) / 2) * xRatioUV;
     }
     return width;
 }
 
 unsigned int PlaneSuperOffset(bool chroma, int src_height, int level, int pel, int vpad, int plane_pitch, int yRatioUV) {
-    // storing subplanes in superframes may be implemented by various ways
+    // スーパーフレーム内での各階層レベルのメモリオフセットを計算
+    // スーパーフレームのメモリレイアウト：
+    /*
+    Level 0 (pel=2の場合):
+    +------------------+  <- offset=0
+    | SubPlane[0] (0,0)|  <- 元画像
+    |                  |
+    +------------------+
+    | SubPlane[1] (0.5,0)| <- 水平補間
+    |                  |
+    +------------------+
+    | SubPlane[2] (0,0.5)| <- 垂直補間
+    |                  |
+    +------------------+
+    | SubPlane[3] (0.5,0.5)| <- 両方向補間
+    |                  |
+    +------------------+  <- offset = pel*pel*plane_pitch*(height+2*vpad)
+    
+    Level 1:
+    +------------------+  <- 上記オフセットから開始
+    | Reduced Frame    |  <- 1/2解像度
+    |                  |
+    +------------------+  <- offset += plane_pitch*(height+2*vpad)
+    
+    Level 2:
+    +------------------+  <- 上記オフセットから開始
+    | Reduced Frame    |  <- 1/4解像度
+    |                  |
+    +------------------+
+    */
     int height = src_height; // luma or chroma
 
     unsigned int offset;
 
     if (level == 0) {
-        offset = 0;
+        offset = 0;  // レベル0は先頭から開始
     } else {
+        // レベル0の全サブピクセル平面のサイズを計算
         offset = pel * pel * plane_pitch * (src_height + vpad * 2);
 
+        // レベル1から指定レベルまでの各レベル分のサイズを加算
         for (int i = 1; i < level; i++) {
+            // クロマ平面の場合は解像度を考慮
             height = chroma ? PlaneHeightLuma(src_height * yRatioUV, i, yRatioUV, vpad * yRatioUV) / yRatioUV : PlaneHeightLuma(src_height, i, yRatioUV, vpad);
 
             offset += plane_pitch * (height + vpad * 2);
@@ -311,38 +351,38 @@ public:
 
 template <typename pixel_t>
 class KMPlane : public KMPlaneBase {
-    IKDeintKernel<pixel_t>* kernel;
-    std::unique_ptr<pixel_t*[]> pPlane;
-    int nPel;
-    int nWidth;
-    int nHeight;
-    int nPitch;
-    int nHPad;
-    int nVPad;
-    int nOffsetPadding;
-    int nHPadPel;
-    int nVPadPel;
-    int nExtendedWidth;
-    int nExtendedHeight;
-    int nBitsPerPixel;
+    IKDeintKernel<pixel_t>* kernel;  // CUDAカーネルインターフェース（動的補間処理用）
+    std::unique_ptr<pixel_t*[]> pPlane;  // 複数のサブピクセル平面へのポインタ配列（nPel*nPel個）
+    int nPel;  // サブピクセル精度（1=整数、2=半ピクセル、4=1/4ピクセル）
+    int nWidth;  // 元の画像の幅（パディング前）
+    int nHeight;  // 元の画像の高さ（パディング前）
+    int nPitch;  // メモリ上の1行のバイト数（アライメント考慮）
+    int nHPad;  // 水平方向のパディングサイズ
+    int nVPad;  // 垂直方向のパディングサイズ
+    int nOffsetPadding;  // パディング開始位置のオフセット（nPitch * nVPad + nHPad）
+    int nHPadPel;  // パディングを考慮した水平オフセット（nHPad * nPel）
+    int nVPadPel;  // パディングを考慮した垂直オフセット（nVPad * nPel）
+    int nExtendedWidth;  // パディング後の幅（nWidth + 2 * nHPad）
+    int nExtendedHeight;  // パディング後の高さ（nHeight + 2 * nVPad）
+    int nBitsPerPixel;  // ピクセルあたりのビット数（8bit=8、16bit=16）
 public:
 
     KMPlane(int nWidth, int nHeight, int nPel, int nHPad, int nVPad, int nBitsPerPixel, IMVCUDA* cuda)
-        : kernel(cuda->get(pixel_t()))
-        , pPlane(new pixel_t*[nPel * nPel])
-        , nPel(nPel)
-        , nWidth(nWidth)
-        , nHeight(nHeight)
-        , nPitch(0)
-        , nHPad(nHPad)
-        , nVPad(nVPad)
-        , nOffsetPadding(0)
-        , nHPadPel(nHPad * nPel)
-        , nVPadPel(nVPad * nPel)
-        , nExtendedWidth(nWidth + 2 * nHPad)
-        , nExtendedHeight(nHeight + 2 * nVPad)
-        , nBitsPerPixel(nBitsPerPixel) {
-        //
+        : kernel(cuda->get(pixel_t()))  // ピクセル型に応じたCUDAカーネルを取得
+        , pPlane(new pixel_t*[nPel * nPel])  // サブピクセル平面のポインタ配列を初期化（nPel=2なら4個、nPel=4なら16個）
+        , nPel(nPel)  // サブピクセル精度を設定
+        , nWidth(nWidth)  // 元画像の幅
+        , nHeight(nHeight)  // 元画像の高さ
+        , nPitch(0)  // 後でSetTargetで設定される
+        , nHPad(nHPad)  // 水平パディングサイズ
+        , nVPad(nVPad)  // 垂直パディングサイズ
+        , nOffsetPadding(0)  // 後でSetTargetで計算される
+        , nHPadPel(nHPad * nPel)  // パディング×サブピクセル精度
+        , nVPadPel(nVPad * nPel)  // パディング×サブピクセル精度
+        , nExtendedWidth(nWidth + 2 * nHPad)  // パディング後の幅
+        , nExtendedHeight(nHeight + 2 * nVPad)  // パディング後の高さ
+        , nBitsPerPixel(nBitsPerPixel) {  // ビット深度
+        // コンストラクタ：サブピクセル平面のメモリレイアウトを準備
     }
 
     int GetNPel() const { return nPel; }
@@ -394,9 +434,11 @@ public:
 
     void SetTarget(uint8_t* _pSrc, int _nPitch) {
         pixel_t* pSrc = (pixel_t*)_pSrc;
-        nPitch = _nPitch;
-        nOffsetPadding = nPitch * nVPad + nHPad;
+        nPitch = _nPitch;  // ピッチを設定
+        nOffsetPadding = nPitch * nVPad + nHPad;  // パディング開始位置を計算
 
+        // 各サブピクセル平面のポインタを設定
+        // メモリレイアウト：各平面は連続して配置され、各平面のサイズはnExtendedHeight行
         for (int i = 0; i < nPel * nPel; i++) {
             pPlane[i] = pSrc + i * nPitch * nExtendedHeight;
         }
@@ -406,8 +448,10 @@ public:
         const pixel_t* pNewPlane = (const pixel_t*)_pNewPlane;
 
         if (kernel->IsEnabled()) {
+            // CUDAカーネルでコピーとパディングを同時実行（高速化）
             kernel->CopyPad(pPlane[0] + nOffsetPadding, nPitch, pNewPlane, nNewPitch, nHPad, nVPad, nWidth, nHeight, stream_);
         } else {
+            // CPU処理：コピー後にパディングを実行
             Copy(pPlane[0] + nOffsetPadding, nPitch, pNewPlane, nNewPitch, nWidth, nHeight);
             PadFrame(pPlane[0], nPitch, nHPad, nVPad, nWidth, nHeight);
         }
@@ -432,6 +476,12 @@ public:
     }
 
     void Refine(void *stream_) {
+        // サブピクセル補間を実行（Wienerフィルタ使用）
+        // nPel=2の場合：4つのサブピクセル平面を生成
+        // pPlane[0]: 元画像 (0,0)
+        // pPlane[1]: 水平補間 (0.5,0) 
+        // pPlane[2]: 垂直補間 (0,0.5)
+        // pPlane[3]: 両方向補間 (0.5,0.5)
         if (kernel->IsEnabled()) {
             switch (nPel) {
             case 2:
@@ -596,17 +646,19 @@ public:
 };
 
 class KMSuperFrame {
-    const KMVParam* param;
-    std::unique_ptr<std::unique_ptr<KMFrame>[]> pFrames;
-    IMVCUDA* cuda;
+    const KMVParam* param;  // 動きベクトル推定のパラメータ
+    std::unique_ptr<std::unique_ptr<KMFrame>[]> pFrames;  // マルチレベル階層のフレーム配列（各レベルで解像度が1/2になる）
+    IMVCUDA* cuda;  // CUDA処理インターフェース
 
 public:
     // xRatioUV PF 160729
     KMSuperFrame(const KMVParam* param, IMVCUDA* cuda)
         : param(param)
-        , pFrames(new std::unique_ptr<KMFrame>[param->nLevels])
+        , pFrames(new std::unique_ptr<KMFrame>[param->nLevels])  // 階層レベル数分のフレーム配列を確保
         , cuda(cuda) {
+        // レベル0：元解像度、サブピクセル精度あり（nPel=2なら4つのサブピクセル平面）
         pFrames[0] = std::unique_ptr<KMFrame>(new KMFrame(param->nWidth, param->nHeight, param->nPel, param, cuda));
+        // レベル1以降：解像度を1/2に縮小、サブピクセル精度なし（nPel=1）
         for (int i = 1; i < param->nLevels; i++) {
             int nWidthi = PlaneWidthLuma(param->nWidth, i, param->xRatioUV, param->nHPad);
             int nHeighti = PlaneHeightLuma(param->nHeight, i, param->yRatioUV, param->nVPad);
@@ -615,13 +667,18 @@ public:
     }
 
     void SetTarget(uint8_t * pSrcY, int pitchY, uint8_t * pSrcU, int pitchU, uint8_t *pSrcV, int pitchV) {
+        // 各階層レベルでメモリオフセットを計算し、フレームのターゲットを設定
         for (int i = 0; i < param->nLevels; i++) {
+            // Y平面のオフセット計算（ルマ平面）
             unsigned int offY = PlaneSuperOffset(
                 false, param->nHeight, i, param->nPel, param->nVPad, pitchY, param->yRatioUV); // no need here xRatioUV and pixelsize
+            // U平面のオフセット計算（クロマ平面）
             unsigned int offU = PlaneSuperOffset(
                 true, param->nHeight / param->yRatioUV, i, param->nPel, param->nVPad / param->yRatioUV, pitchU, param->yRatioUV);
+            // V平面のオフセット計算（クロマ平面）
             unsigned int offV = PlaneSuperOffset(
                 true, param->nHeight / param->yRatioUV, i, param->nPel, param->nVPad / param->yRatioUV, pitchV, param->yRatioUV);
+            // 各レベルでフレームのターゲットメモリを設定
             pFrames[i]->SetTarget(
                 pSrcY + offY * param->nPixelSize, pitchY, pSrcU + offU * param->nPixelSize, pitchU, pSrcV + offV * param->nPixelSize, pitchV);
         }
@@ -670,57 +727,62 @@ class KMSuper : public GenericVideoFilter {
 public:
     KMSuper(PClip child, int nHPad, int nVPad, int nPel, int nLevels, bool chroma, int nSharp, int nRfilter, PNeoEnv env)
         : GenericVideoFilter(child)
-        , params(KMVParam::SUPER_FRAME)
-        , cuda(CreateKDeintCUDA()) {
-        // 今の所対応しているのコレだけ
-        if (nHPad != 8) env->ThrowError("[KMSuper] hpad must be 8.");
-        if (nVPad != 8) env->ThrowError("[KMSuper] vpad must be 8.");
-        if (nSharp != 2) env->ThrowError("[KMSuper] sharp must be 2.");
-        if (nRfilter != 2) env->ThrowError("[KMSuper] rfilter must be 2.");
-        if (nPel != 1 && nPel != 2) env->ThrowError("[KMSuper] pel must be 1 or 2");
+        , params(KMVParam::SUPER_FRAME)  // スーパーフレーム生成用パラメータ
+        , cuda(CreateKDeintCUDA()) {  // CUDA処理インターフェース初期化
+        // パラメータ検証（現在の実装では固定値のみ対応）
+        if (nHPad != 8) env->ThrowError("[KMSuper] hpad must be 8.");  // 水平パディングサイズ（固定）
+        if (nVPad != 8) env->ThrowError("[KMSuper] vpad must be 8.");  // 垂直パディングサイズ（固定）
+        if (nSharp != 2) env->ThrowError("[KMSuper] sharp must be 2.");  // シャープネス（固定）
+        if (nRfilter != 2) env->ThrowError("[KMSuper] rfilter must be 2.");  // リダクションフィルタ（固定）
+        if (nPel != 1 && nPel != 2) env->ThrowError("[KMSuper] pel must be 1 or 2");  // サブピクセル精度（1=整数、2=半ピクセル）
 
-        params.nWidth = vi.width;
-        params.nHeight = vi.height;
-        params.nActualWidth = 0;
-        params.nActualHeight = 0;
-        params.yRatioUV = 1 << vi.GetPlaneHeightSubsampling(PLANAR_U);
-        params.xRatioUV = 1 << vi.GetPlaneWidthSubsampling(PLANAR_U);
+        // 動画パラメータの設定
+        params.nWidth = vi.width;  // 元動画の幅
+        params.nHeight = vi.height;  // 元動画の高さ
+        params.nActualWidth = 0;  // 実際の処理幅（未使用）
+        params.nActualHeight = 0;  // 実際の処理高さ（未使用）
+        params.yRatioUV = 1 << vi.GetPlaneHeightSubsampling(PLANAR_U);  // クロマの垂直サブサンプリング比（通常2）
+        params.xRatioUV = 1 << vi.GetPlaneWidthSubsampling(PLANAR_U);  // クロマの水平サブサンプリング比（通常2）
 
-        params.nPixelSize = vi.ComponentSize();
-        params.nBitsPerPixel = vi.BitsPerComponent();
-        params.nPixelShift = (params.nPixelSize == 1) ? 0 : 1;
+        params.nPixelSize = vi.ComponentSize();  // ピクセルサイズ（1=8bit、2=16bit）
+        params.nBitsPerPixel = vi.BitsPerComponent();  // コンポーネントあたりのビット数
+        params.nPixelShift = (params.nPixelSize == 1) ? 0 : 1;  // ピクセルシフト（16bit用）
 
+        // 最大階層レベル数を計算（クロマ平面が最低2ピクセル以上になるまで）
         int nLevelsMax = 0;
         while (PlaneHeightLuma(vi.height, nLevelsMax, params.yRatioUV, nVPad) >= params.yRatioUV * 2 &&
             PlaneWidthLuma(vi.width, nLevelsMax, params.xRatioUV, nHPad) >= params.xRatioUV * 2) // at last two pixels width and height of chroma
         {
             nLevelsMax++;
         }
+        // 階層レベル数の調整（0以下または最大値を超える場合は自動設定）
         if (nLevels <= 0 || nLevels > nLevelsMax) {
             nLevels = nLevelsMax;
         }
 
-        int nSuperWidth = params.nWidth + 2 * nHPad;
-        int nSuperHeight = PlaneSuperOffset(false, params.nHeight, nLevels, nPel, nVPad, nSuperWidth, params.yRatioUV) / nSuperWidth;
+        // スーパーフレームの最終サイズを計算
+        int nSuperWidth = params.nWidth + 2 * nHPad;  // パディング後の幅
+        int nSuperHeight = PlaneSuperOffset(false, params.nHeight, nLevels, nPel, nVPad, nSuperWidth, params.yRatioUV) / nSuperWidth;  // 全階層を含む高さ
         if (params.yRatioUV == 2 && nSuperHeight & 1) {
-            nSuperHeight++; // even
+            nSuperHeight++; // クロマサブサンプリング用に偶数に調整
         }
-        vi.width = nSuperWidth;
-        vi.height = nSuperHeight;
+        vi.width = nSuperWidth;  // 出力フレームの幅
+        vi.height = nSuperHeight;  // 出力フレームの高さ
 
-        params.nHPad = nHPad;
-        params.nVPad = nVPad;
-        params.nPel = nPel;
-        params.chroma = chroma;
-        params.nLevels = nLevels;
-        params.nDropLevels = 0;
-        params.pixelType = vi.pixel_type;
+        // パラメータの最終設定
+        params.nHPad = nHPad;  // 水平パディングサイズ
+        params.nVPad = nVPad;  // 垂直パディングサイズ
+        params.nPel = nPel;  // サブピクセル精度
+        params.chroma = chroma;  // クロマ処理の有無
+        params.nLevels = nLevels;  // 階層レベル数
+        params.nDropLevels = 0;  // ドロップレベル数（未使用）
+        params.pixelType = vi.pixel_type;  // ピクセルタイプ
 
-        KMVParam::SetParam(vi, &params);
+        KMVParam::SetParam(vi, &params);  // 動画情報にパラメータを設定
 
-        pSrcGOF = std::unique_ptr<KMSuperFrame>(new KMSuperFrame(&params, cuda.get()));
+        pSrcGOF = std::unique_ptr<KMSuperFrame>(new KMSuperFrame(&params, cuda.get()));  // スーパーフレーム生成器を初期化
 
-        //pSrcGOF->SetInterp(nRfilter, nSharp);
+        //pSrcGOF->SetInterp(nRfilter, nSharp);  // 補間設定（現在未対応）
     }
 
     PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env_) {
@@ -1939,21 +2001,22 @@ public:
     }
 };
 
+// 1レベル分のCUDA探索実装で、ワーク領域を一括確保し、ベクトル/SAD/探索テンポラリをピッチ付きで管理します。
 class PlaneOfBlocksCUDA : public PlaneOfBlocksBase {
     typedef uint8_t pixel_t;
 
-    const MVPlaneParam p;
-    IKDeintKernel<pixel_t>* kernel;
+    const MVPlaneParam p; // この平面の定数パラメータ（ブロック数/サイズ、オーバーラップ、ペル精度、レベル等）
+    IKDeintKernel<pixel_t>* kernel; // CUDAカーネル（探索/補間/初期化などのGPU実装）
 
-    short2* vectors;
-    int* sads;
-    int* prog;
-    int* next;
-    void* blocks;
-    void* batchdata;
-    void *loadmvbatchdata;
+    short2* vectors; // ベクトル一時格納（short2: x,y）バッチ×ブロック列の2Dピッチ
+    int* sads;       // 各ブロックのSAD一時格納
+    int* prog;       // 行走査などの進行状況（列単位の制御用）
+    int* next;       // 次タスク/キュー用インデックス
+    void* blocks;    // 検索用のテンポラリバッファ（探索窓）
+    void* batchdata; // バッチ化された探索用ワーク領域
+    void *loadmvbatchdata; // 事前MVロードのためのワーク領域
 
-    enum { N_CONST_VEC = 4 };
+    enum { N_CONST_VEC = 4 }; // ベクタピッチ先頭の予約領域（アライン/定数用）
 
     int GetVectorsPitch() const {
         return N_CONST_VEC + p.nBlkCount * 2;
@@ -1977,7 +2040,21 @@ public:
 
     ~PlaneOfBlocksCUDA() {}
 
-    int GetWorkSize() {
+    int GetWorkSize() { // このレベルが必要とするワーク領域の総サイズ（バイト）
+        // メモリレイアウト（SetWorkMemoryで同順に切り出す）
+        //   [vectors]          : short2 × (GetVectorsPitch() * batch)
+        //                        先頭N_CONST_VECは定数/ゼロMV・グローバルMVなどの予約領域
+        //                        続く領域は「ブロック数×2ベクトル/ブロック」をバッチ分確保
+        //   [sads]             : int × (GetSadsPitch() * batch)
+        //                        先頭N_CONST_VECは予約、以降にブロックごとのSADを格納
+        //   [prog]             : int × (p.nBlkX * batch) 行進行度（各行の処理位置などを保持）
+        //   [next]             : int × (1 * batch)       キュー/次ジョブ管理
+        //   [blocks]           : SearchBlock × (p.nBlkCount * batch)
+        //                        各ブロックの探索状態・候補管理用のテンポラリ
+        //   [batchdata]        : SearchBatchData × (batch)
+        //                        kernelに渡す1バッチ分の引数テーブル
+        //   [loadmvbatchdata]  : LoadMVBatchData × (batch)
+        //                        事前/事後のMVロード/ストア用の一時引数テーブル
         return GetVectorsPitch() * p.batch * sizeof(short2) +
             (GetSadsPitch() /*sads*/ + 1 /*next*/ + p.nBlkX /*prog*/) * p.batch * sizeof(int) +
             p.nBlkCount * p.batch * kernel->GetSearchBlockSize() + /*blocks*/
@@ -1985,7 +2062,8 @@ public:
             p.batch * kernel->GetLoadMVBatchSize(); /*loadmvbatchdata*/
     }
 
-    void SetWorkMemory(uint8_t* work) {
+    void SetWorkMemory(uint8_t* work) { // 事前確保されたワーク領域をこのレベルの各バッファへ切り出し
+        // カット順は GetWorkSize の説明と一致させること
         vectors = (short2*)work;
         sads = (int*)&vectors[GetVectorsPitch() * p.batch];
         prog = &sads[GetSadsPitch() * p.batch];
@@ -1995,21 +2073,21 @@ public:
         loadmvbatchdata = (void*)&((uint8_t*)batchdata)[p.batch * kernel->GetSearchBatchSize()];
 
         // オフセットしておく
-        vectors += N_CONST_VEC;
-        sads += N_CONST_VEC;
+        vectors += N_CONST_VEC; // vectors[0..N_CONST_VEC-1]は定数予約（kl_init_const_vecで利用）
+        sads += N_CONST_VEC;    // sadsも同様に先頭を予約
     }
 
     void InitializeGlobalMV(int batch, VECTOR* globalMV) {
         // do nothing
     }
 
-    void EstimateGlobalMVDoubled(int batch, VECTOR* globalMV) {
+    void EstimateGlobalMVDoubled(int batch, VECTOR* globalMV) { // 一段粗いレベルから得たグローバルMVをスケール2倍で更新
         assert(batch <= ANALYZE_MAX_BATCH);
 
         kernel->EstimateGlobalMV(batch, vectors, GetVectorsPitch(), p.nBlkCount, (short2*)globalMV);
     }
 
-    void InterpolatePrediction(int batch, const PlaneOfBlocksBase* _pob) {
+    void InterpolatePrediction(int batch, const PlaneOfBlocksBase* _pob) { // 上位レベルの結果から予測MVを補間し初期化
         assert(batch <= ANALYZE_MAX_BATCH);
 
         const PlaneOfBlocksCUDA& pob = *static_cast<const PlaneOfBlocksCUDA*>(_pob);
@@ -2052,6 +2130,9 @@ public:
             kernel->LoadMV(src[i], vectors + vecPitch * i, sads + sadPitch * i, nCount);
         }
 #else
+        // 事前解析MV（src）をGPU側のベクタ・SAD一時領域（vectors/sads）にレイアウトし、
+        // 同時に出力配列（out）にコピーする。ベクタはバッチ×列ピッチ（vecPitch）で2D配置。
+        // SADはベクタに整合するピッチ（sadPitch）で並べる。各ブロック1要素（int: 最良候補SAD）。
         kernel->LoadMVBatch(loadmvbatchdata, batch, src, out, vectors, vecPitch, sads, sadPitch, nCount);
 #endif
     }
@@ -2097,6 +2178,14 @@ public:
         int nImgPitchY = nSrcPitchY * pSrcYPlane->GetExtendedHeight();
         int nImgPitchUV = (p.chroma ? (nSrcPitchUV * pSrcUPlane->GetExtendedHeight()) : 0);
 
+        // kernel->Search:
+        //   - kl_init_const_vecでゼロMVとグローバルMVをvectorsの先頭予約領域へ初期化
+        //   - kl_prepare_searchで各ブロックの探索設定とSAD書込先などをセットアップ
+        //   - launch_search/launch_calc_all_sadで候補探索とSAD計算を実行
+        // vectors/sadsは2Dピッチ（vecPitch/sadPitch）で「バッチ」×「ブロック配列」を並べる。
+        //   vectors: short2(x,y)×(N_CONST_VEC + nBlkCount)
+        //   sads   : int×(N_CONST_VEC + nBlkCount)
+        // SADは1ブロックにつき1要素（最良候補のSAD）を保持する（候補評価の最終結果）。
         kernel->Search(batch, out, batchdata, p.searchType, p.nBlkX, p.nBlkY, p.nBlkSizeX,
             p.nLogScale, p.nLambdaLevel, p.lsad, p.penaltyZero,
             p.pglobal, p.penaltyNew, p.nPel, p.chroma,
@@ -2118,17 +2207,18 @@ public:
     }
 };
 
+// レベルごとにPlaneOfBlocks(CUDA/CPU)を保持し、粗→細の順にMV探索、グローバルMVの伝搬、予測補間を行う
 class GroupOfPlanes {
-    IMVCUDA* cuda;
+    IMVCUDA* cuda; // CUDA実行環境（trueならcudaplanesを使用、falseならcpuplanes）
 
-    const LevelInfo* linfo;
-    const int nLevelCount;
-    const int nPreAnalyzedCount;
-    const bool global;
-    const int maxBatch;
+    const LevelInfo* linfo; // 各レベルのブロック配置情報（nBlkX, nBlkY）
+    const int nLevelCount; // 解析レベル数（0が最も細かい）
+    const int nPreAnalyzedCount; // 事前解析済みでスキップする下位レベル数
+    const bool global; // 大域運動ベクトル推定を有効にするか
+    const int maxBatch; // バッチ処理数（複数フレーム同時処理）
 
-    std::unique_ptr<std::unique_ptr<PlaneOfBlocksBase>[]> cpuplanes;
-    std::unique_ptr<std::unique_ptr<PlaneOfBlocksBase>[]> cudaplanes;
+    std::unique_ptr<std::unique_ptr<PlaneOfBlocksBase>[]> cpuplanes; // CPU版の平面配列
+    std::unique_ptr<std::unique_ptr<PlaneOfBlocksBase>[]> cudaplanes; // CUDA版の平面配列
 
 public:
     GroupOfPlanes(
@@ -2193,7 +2283,7 @@ public:
     }
 
     int GetWorkSize() const {
-        int size = sizeof(VECTOR) * maxBatch; // globalMV
+        int size = sizeof(VECTOR) * maxBatch; // globalMV（各バッチの初期グローバルベクトル領域）
         int nLevelFrom = nLevelCount - 1;
         auto& planes = cuda->IsEnabled() ? cudaplanes : cpuplanes;
         for (int i = nLevelFrom; i >= 0; i--) {
@@ -2203,15 +2293,15 @@ public:
     }
 
     void SearchMVs(int batch, KMSuperFrame **pSrcGOF, KMSuperFrame **pRefGOF, const VECTOR **pre, VECTOR **out, uint8_t* work) {
-        //out->isValid = true;
+        // CUDA/CPUの各レベル平面に対し、粗いレベルから細かいレベルへ順にMV探索を行う
 
         auto& planes = cuda->IsEnabled() ? cudaplanes : cpuplanes;
 
         VECTOR* outptr[ANALYZE_MAX_BATCH];
         std::copy(out, out + batch, outptr);
 
-        VECTOR* globalMV = (VECTOR*)work;
-        uint8_t* planework = (uint8_t*)&globalMV[maxBatch];
+        VECTOR* globalMV = (VECTOR*)work; // 先頭にグローバルMV領域を確保
+        uint8_t* planework = (uint8_t*)&globalMV[maxBatch]; // 各レベルのワーク領域の先頭
 
         int nLevelFrom = nLevelCount - 1;
 
@@ -2223,7 +2313,7 @@ public:
 
         planes[0]->InitializeGlobalMV(batch, globalMV);
 
-        // preがあればoutにコピーしてレベルを進めておく
+        // pre（部分解析ベクトル）があれば、それを出力にコピーして対応レベルをスキップ
         if (pre) {
             const VECTOR* preptr[ANALYZE_MAX_BATCH];
             std::copy(pre, pre + batch, preptr);
@@ -2244,16 +2334,16 @@ public:
             int nBlks = linfo[i].nBlkX * linfo[i].nBlkY;
             if (i != nLevelCount - 1) {
                 if (global) {
-                    // get updated global MV (doubled)
+                    // 上位レベルで推定した大域MVを2倍スケールで更新
                     planes[i + 1]->EstimateGlobalMVDoubled(batch, globalMV);
                 }
 
                 planes[i]->InterpolatePrediction(batch, planes[i + 1].get());
             }
 
-            //		DebugPrintf("SearchMV level %i", i);
-            KMFrame* pSrcFrame[ANALYZE_MAX_BATCH];
-            KMFrame* pRefFrame[ANALYZE_MAX_BATCH];
+            // レベルiのMV探索（KMFrameはKMSuperFrameの各レベルフレーム）
+            KMFrame* pSrcFrame[ANALYZE_MAX_BATCH]; // 各バッチのソース階層フレーム
+            KMFrame* pRefFrame[ANALYZE_MAX_BATCH]; // 各バッチの参照階層フレーム
             for (int b = 0; b < batch; ++b) {
                 pSrcFrame[b] = pSrcGOF[b]->GetFrame(i);
                 pRefFrame[b] = pRefGOF[b]->GetFrame(i);
@@ -2303,20 +2393,20 @@ const char* GetAnalyzeValidPropName() {
 
 class KMAnalyse : public GenericVideoFilter {
 private:
-    KMVParam params;
-    std::unique_ptr<IMVCUDA> cuda;
-    std::unique_ptr<GroupOfPlanes> pAnalyzer;
-    std::unique_ptr<KMSuperFrame> pSrcSF[ANALYZE_MAX_BATCH];
-    std::unique_ptr<KMSuperFrame> pRefSF[ANALYZE_MAX_BATCH];
+    KMVParam params; // 解析に用いるMVTools互換パラメータ一式（ブロックサイズ/オーバーラップ/階層数/画素情報など）
+    std::unique_ptr<IMVCUDA> cuda; // CUDA実行用ハンドラ（ストリーム/カーネル呼び出しへのアクセサ）
+    std::unique_ptr<GroupOfPlanes> pAnalyzer; // 各レベルのブロック平面群（CUDA/CPU実装を背後に切替）
+    std::unique_ptr<KMSuperFrame> pSrcSF[ANALYZE_MAX_BATCH]; // 入力（src）スーパーフレーム（バッチ処理対応）
+    std::unique_ptr<KMSuperFrame> pRefSF[ANALYZE_MAX_BATCH]; // 参照（ref）スーパーフレーム（バッチ処理対応）
 
-    int maxBatch;
-    int curBatch;
-    PVideoFrame batchFrames[ANALYZE_MAX_BATCH];
+    int maxBatch; // 一度に並列処理するフレーム数（CUDAバッチ）
+    int curBatch; // 直近に計算済みのバッチインデックス（キャッシュ）
+    PVideoFrame batchFrames[ANALYZE_MAX_BATCH]; // バッチごとの出力ベクトルフレーム（結果の書き戻し先）
 
-    PClip partial;
-    const KMVParam* partialParams;
+    PClip partial; // 事前解析済み（partial super）ベクトル入力（あれば高速化に利用）
+    const KMVParam* partialParams; // partial のパラメータ（事前解析レベル数など）
 
-    void LoadSourceFrame(KMSuperFrame *sf, PVideoFrame &src) {
+    void LoadSourceFrame(KMSuperFrame *sf, PVideoFrame &src) { // 一つの生フレームをKMSuperFrameのメモリにバインド
         const unsigned char *	pSrcY;
         const unsigned char *	pSrcU;
         const unsigned char *	pSrcV;
@@ -2420,8 +2510,33 @@ public:
 
         const int nBlkX = (nWidth - params.nOverlapX) / (params.nBlkSizeX - params.nOverlapX);
         const int nBlkY = (nHeight - params.nOverlapY) / (params.nBlkSizeY - params.nOverlapY);
-        const int nWidth_B = (params.nBlkSizeX - params.nOverlapX) * nBlkX + params.nOverlapX; // covered by blocks
-        const int nHeight_B = (params.nBlkSizeY - params.nOverlapY) * nBlkY + params.nOverlapY;
+        const int nWidth_B = (params.nBlkSizeX - params.nOverlapX) * nBlkX + params.nOverlapX; // ブロックで実際にカバーされる幅
+        const int nHeight_B = (params.nBlkSizeY - params.nOverlapY) * nBlkY + params.nOverlapY; // ブロックで実際にカバーされる高さ
+
+        // ブロック配置の図解
+        // パラメータ:
+        //   nBlkSizeX, nBlkSizeY: ブロックサイズ
+        //   nOverlapX, nOverlapY: ブロック間オーバーラップ
+        //   nBlkX, nBlkY       : 配置されるブロック数（横×縦）
+        //   nWidth_B, nHeight_B: ブロックでカバーされる実効範囲
+        // 1次元の場合の考え方（横方向）
+        //   先頭ブロックの左端を0としたとき、各ブロックの開始位置は
+        //     start(i) = i * (nBlkSizeX - nOverlapX)  (i = 0..nBlkX-1)
+        //   右端は start(i) + nBlkSizeX
+        //   最終ブロック(i = nBlkX-1)の右端が nWidth_B に一致
+        //     nWidth_B = (nBlkSizeX - nOverlapX) * nBlkX + nOverlapX
+        // 2次元配置（例: nBlkX=4, nBlkY=3, nBlkSizeX=8, nBlkSizeY=8, nOverlapX=4, nOverlapY=4）
+        // 横方向のステップ = 8-4=4, 縦方向のステップ = 8-4=4
+        // カバー範囲:
+        //   nWidth_B  = 4*4 + 4 = 20
+        //   nHeight_B = 4*3 + 4 = 16
+        // 図（#はブロック、.はオーバーラップで再カバーされる領域を含む）:
+        //   X方向 (0..19)
+        //   [########]....
+        //       [########]..
+        //           [########]
+        //               [########]
+        //   実際は2Dで縦方向にも同様に4ピクセル刻みでずれて配置される。
 
         // calculate valid levels
         int				nLevelsMax = 0;
@@ -2546,7 +2661,7 @@ public:
             env
         ));
 
-        // Defines the format of the output vector clip
+        // 出力ベクトルクリップのフレームレイアウトを定義（BGR32: 可視化/保持用の固定フォーマット）
         const int		out_frame_bytes = pAnalyzer->GetArraySize();
         vi.pixel_type = VideoInfo::CS_BGR32;
         vi.width = 2048;
@@ -2634,7 +2749,7 @@ public:
             LoadSourceFrame(pRefSF[b].get(), refFrames[b]);
             ppRefSF[b] = pRefSF[b].get();
 
-            if (partialParams) {
+            if (partialParams) { // 事前解析済み（partial super）があれば、そのベクトルを読み出して初期化に使う
                 preFrames[b] = partial->GetFrame(nsrc, env);
                 ppPre[b] = reinterpret_cast<const VECTOR*>(preFrames[b]->GetReadPtr());
             }
@@ -2647,8 +2762,8 @@ public:
 
         cuda->SetEnv(env);
 
-        PVideoFrame work;
-        int work_bytes = pAnalyzer->GetWorkSize();
+        PVideoFrame work; // CUDA/CPU両実装で共有する作業用ワークバッファ（連続メモリ）
+        int work_bytes = pAnalyzer->GetWorkSize(); // レベル毎の必要領域を合算
         VideoInfo workvi = VideoInfo();
         workvi.pixel_type = VideoInfo::CS_BGR32;
         workvi.width = 2048;

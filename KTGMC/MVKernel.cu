@@ -270,12 +270,28 @@ typedef int sad_t; // 後でfloatにする
 
 struct SearchBlock {
     // [0-3]: nDxMax, nDyMax, nDxMin, nDyMin （MaxはMax-1にしておく）
+    //         - 探索可能なMVのΔx/Δyの範囲（サブピクセル単位: nPel倍）
+    //         - 画素座標(x,y)とブロックサイズ、パディング、拡張フレーム境界から算出
     // [4-9]: Left predictor, Up predictor, bottom-right predictor(from coarse level)
-    // 無効なところは作らないようにする（最低でもどれか１つは有効なので無効なろところはそのインデックスで埋める）
-    // [10-11]: predictor の x, y
+    //         - 予測候補のソース指定（インデックスまたはセンチネル）
+    //           data[4] = -2 : Zero MV（(0,0)固定）
+    //           data[5] = -1 : Global MV（大域推定ベクトル）
+    //           data[6] = blkIdx : 自ブロック（coarse/事前）予測
+    //           data[7] = p1 : 左（または奇偶に応じた片側）近傍ブロック
+    //           data[8] = p2 : 上近傍ブロック（先頭行は左を再利用してmedian計算を安定化）
+    //           data[9] = p3 : 右下（coarseレベル由来）
+    //         - 値の意味:
+    //           -2: ゼロベクタを意味するセンチネル
+    //           -1: グローバルベクタを意味するセンチネル
+    //           >=0: インデックス。0..(nBlkX*nBlkY-1) は現在レベルの vectors[] を指す。
+    //                (nBlkX*nBlkY)..(2*nBlkX*nBlkY-1) は vectors_copy[]（コピー面）を指す。
+    //                ※ kl_prepare_search で vectors_copy に現在のvectorsを複製し、
+    //                   参照一貫性（非決定回避）のためにコピー面参照を使うことがある。
+    // [10-11]: predictor の x, y（自ブロックの事前予測ベクトル成分）
     int data[12];
     // [0-3]: penaltyZero, penaltyGlobal, 0(penaltyPredictor), penaltyNew
-    // [4]: lambda
+    //        - 候補種別ごとのコスト加算係数（ゼロ/グローバル/新規など）
+    // [4]:    lambda（モーションコストの重み）。画素SADに応じてスケール、先頭行は0。
     sad_t dataf[5];
 };
 
@@ -836,40 +852,49 @@ __global__ void
         int nImgPitchY, int nImgPitchUV
     ) {
     // threads=BLK_SIZE*8
+    // このkernelの並列構成と役割:
+    // - grid.x: バッチインデックス（launch時 blocks.x = batch）。blockIdx.xごとに1バッチ分のSearchBatchDataを扱う。
+    // - grid.y: 同一バッチ内のワーカー群（blocks.y = min(nBlkX, nBlkY)）。各ワーカーは列（blkx）を動的に分担。
+    // - blockDim.x: BLK_SIZE*8 スレッド。BLK_SIZEスレッド×8グループ構成。
+    //   各グループ（bx=0..7）は予測候補（zero/global/median/neighborなど）を担当し、
+    //   そのグループ内のwi=0..BLK_SIZE-1がブロック内画素列を並列に処理してSADを計算する。
 
     enum {
         BLK_SIZE_UV = BLK_SIZE / 2,
         BLK_STEP = BLK_SIZE / 2,
     };
 
-    const int tx = threadIdx.x;
-    const int wi = tx % BLK_SIZE;
-    const int bx = tx / BLK_SIZE;
+    const int tx = threadIdx.x; // block内のスレッドID [0..BLK_SIZE*8-1]
+    const int wi = tx % BLK_SIZE; // within-tile index: ブロック内の画素列などを担当（0..BLK_SIZE-1）
+    const int bx = tx / BLK_SIZE; // 予測候補グループのID（0..7）: 7つの候補＋予備枠
 
     __shared__ SearchBatchData<pixel_t> d;
 
-    if (tx < SearchBatchData<pixel_t>::LEN) {
+    if (tx < SearchBatchData<pixel_t>::LEN) { // マジックナンバー: SearchBatchData内のdata[]長
+        // 1ブロック（=1バッチ）につきグローバルの引数パックをsharedに複製（LDSキャッシュ）
         d.data[tx] = pdata[blockIdx.x].data[tx];
     }
     __syncthreads();
 
-    __shared__ int blkx;
+    __shared__ int blkx; // 動的に割り当てられる列インデックス。全スレッドで共有するためshared使用。
 
     //for (int blkx = blockIdx.x; blkx < nBlkX; blkx += gridDim.x) {
     while (true) {
         if (tx == 0) {
+            // d.d.next: 次に処理すべき列（blkx）を示す共有カウンタ。
+            // 複数のgrid.yブロックでatomicAddにより列を取り合う（動的ワーク配分）。
             blkx = atomicAdd(d.d.next, 1);
         }
         __syncthreads();
 
         if (blkx >= nBlkX) {
-            break;
+            break; // 全列を取り切ったら終了
         }
 
         for (int blky = 0; blky < nBlkY; ++blky) {
 
             // srcをshared memoryに転送
-            int offx = nPad + blkx * BLK_STEP;
+            int offx = nPad + blkx * BLK_STEP; // BLK_STEPはブロック間の移動量（オーバーラップ考慮）
             int offy = nPad + blky * BLK_STEP;
 
             __shared__ __align__(4) pixel_t srcY[BLK_SIZE * BLK_SIZE];
@@ -885,6 +910,7 @@ __global__ void
             __shared__ const pixel_t* pRefBV;
 
             if (tx == 0) {
+                // 参照ブロックの先頭ポインタを共有に退避
                 pRefBY = &d.d.pRefY[offx + offy * nPitchY];
                 if (CHROMA) {
                     pRefBU = &d.d.pRefU[(offx >> 1) + (offy >> 1) * nPitchUV];
@@ -893,8 +919,8 @@ __global__ void
             }
 
             // パラメータなどのデータをshared memoryに格納
-            __shared__ int data[12];
-            __shared__ sad_t dataf[5];
+            __shared__ int data[12];   // マジックナンバー12: SearchBlock::data の要素数
+            __shared__ sad_t dataf[5]; // マジックナンバー5 : SearchBlock::dataf の要素数
 
             if (tx < 12) {
                 int blkIdx = blky * nBlkX + blkx;
@@ -904,30 +930,33 @@ __global__ void
                 }
             }
 
-            // !!!!! 依存ブロックの計算が終わるのを待つ !!!!!!
+            // !!!!! 依存ブロックの計算が終わるのを待つ !!!!!
+            // d.d.prog: 列ごとの進捗配列。d.d.prog[x] は列xで最後に完了した行インデックス。
+            // 隣接ブロックの結果（予測や境界条件）に依存するため、左隣等の進捗を参照して同期する。
 #if ANALYZE_SYNC == 1
             if (tx == 0 && blkx > 0) {
-                while (d.d.prog[blkx - 1] < blky);
+                while (d.d.prog[blkx - 1] < blky); // 左隣の同じ行が終わるまで待つ
             }
 #elif ANALYZE_SYNC == 2
             if (tx == 0 && blkx >= 2) {
-                while (d.d.prog[blkx - (1 + (blkx & 1))] < blky);
+                while (d.d.prog[blkx - (1 + (blkx & 1))] < blky); // 奇偶で片側の列に依存
             }
 #endif
 
             __syncthreads();
 
-            // FetchPredictors
-            __shared__ CostResult result[8];
+            // FetchPredictors: 予測候補を準備する
+            __shared__ CostResult result[8]; // 7候補＋作業用
             __shared__ const pixel_t* pRefY[8];
             __shared__ const pixel_t* pRefU[8];
             __shared__ const pixel_t* pRefV[8];
 
-            if (tx < 7) {
+            if (tx < 7) { // マジックナンバー7: 候補数（zero, global, predictor, predictors[1..3], median）
                 __shared__ volatile short pred[7][2]; // x, y
 
                 if (tx < 6) {
                     // zero, global, predictor, predictors[1]～[3]を取得
+                    // REF_VECTOR_INDEX: 先頭の定数領域（zero/global）および近傍予測の参照位置
                     short2 vec = d.d.vectors[REF_VECTOR_INDEX[tx]];
                     dev_clip_mv(vec, CLIP_RECT);
 
@@ -938,8 +967,7 @@ __global__ void
                         pred[dx][1] = vec.y;
                         // memfence
                         if (tx < 2) {
-                            // Median predictor
-                            // 計算効率が悪いので消したい・・・
+                            // Median predictor を2スレッドで算出
                             int a = pred[4][tx];
                             int b = pred[5][tx];
                             int c = pred[6][tx];
@@ -950,8 +978,7 @@ __global__ void
                         pred[tx][1] = vec.y;
                         // memfence
                         if (tx < 2) {
-                            // Median predictor
-                            // 計算効率が悪いので消したい・・・
+                            // Median predictor の別実装（配列配置違い）
                             int a = pred[3][tx];
                             int b = pred[4][tx];
                             int c = pred[5][tx];
@@ -959,11 +986,12 @@ __global__ void
                         }
                     }
                 }
-                // memfence
+                // memfence: 予測ベクトル座標 → resultに反映、コストの初期値を設定
                 int x = result[tx].xy.x = pred[tx][0];
                 int y = result[tx].xy.y = pred[tx][1];
-                result[tx].cost = (LAMBDA * dev_sq_norm(x, y, PRED_X, PRED_Y)) >> 8;
+                result[tx].cost = (LAMBDA * dev_sq_norm(x, y, PRED_X, PRED_Y)) >> 8; // モーションコスト
 
+                // 参照ブロックポインタを候補ごとに取得（サブピクセル補間はNPELで制御）
                 pRefY[tx] = dev_get_ref_block<pixel_t, NPEL>(pRefBY, nPitchY, nImgPitchY, x, y);
                 if (CHROMA) {
                     pRefU[tx] = dev_get_ref_block<pixel_t, NPEL>(pRefBU, nPitchUV, nImgPitchUV, x >> 1, y >> 1);
@@ -977,13 +1005,9 @@ __global__ void
             bool debug = false;
 
             // まずは7箇所を計算
-            const unsigned int activemask = (BLK_SIZE >= WARP_SIZE) ? FULL_MASK : __ballot_sync(FULL_MASK, bx < 7); // BLK_SIZE >= WARP_SIZE のとき以外はwarp内でif文の結果が変わりうる
-            if (bx < 7) {
-#if 0
-                if (wi == 0 && nBlkY == 10 && blkx == 1 && blky == 0) {
-                    printf("1:[%d]: x=%d,y=%d,cost=%d\n", bx, result[bx].xy.x, result[bx].xy.y, result[bx].cost);
-                }
-#endif
+            const unsigned int activemask = (BLK_SIZE >= WARP_SIZE) ? FULL_MASK : __ballot_sync(FULL_MASK, bx < 7); // 予測グループが有効か
+            if (bx < 7) { // グループbx=0..6がそれぞれ1つの候補のSADを担当
+                // dev_calc_sad: グループ内wi=0..BLK_SIZE-1で画素列/行を分担し、SADを並列に蓄積
                 sad_t sad = dev_calc_sad<pixel_t, BLK_SIZE, CHROMA, (BLK_SIZE >= WARP_SIZE)>(wi, srcY, srcU, srcV, pRefY[bx], pRefU[bx], pRefV[bx], nPitchY, nPitchUV, nPitchUV, activemask);
                 //sad_t sad = dev_calc_sad_debug<pixel_t, BLK_SIZE, CHROMA>(debug && bx == 3, wi, srcY, srcU, srcV, pRefY[bx], pRefU[bx], pRefV[bx], nPitchY, nPitchUV, nPitchUV);
 
@@ -1002,6 +1026,7 @@ __global__ void
 #endif
 
                 if (wi == 0) {
+                    // 候補ごとの合成コスト：SAD + 罰則（ゼロ/グローバル/その他で係数が異なる）
                     if (bx < 3) {
                         // pzero, pglobal, 0
                         result[bx].cost = sad + ((sad * PENALTIES[bx]) >> 8);
@@ -1034,8 +1059,10 @@ __global__ void
 
             __syncthreads();
 
-            // 結果集約
-            if (tx < 3) { // 7-4=3スレッドで呼ぶ
+            // 結果集約（7候補 → 最良）
+            // 7候補を1つに絞る削減手順が「7→4→2→1」になるため、最初の段で必要な比較回数が3回（7→4のためのペア比較: (0,1)、(2,3)、(4,5)、候補6は持ち越し）。
+            // この「3つの並列比較」を実行するために tx=0..2 の3スレッドだけを使う。
+            if (tx < 3) {
                 dev_reduce_result<7, CPU_EMU>(result, tx);
             }
 #if 0
@@ -1046,7 +1073,7 @@ __global__ void
 
             __syncthreads();
 
-            // Refine
+            // Refine 段（探索タイプに応じて範囲拡張/HEX段階探索など）
             if (SEARCH == 1) {
                 // EXHAUSTIVE
                 int bmx = result[0].xy.x;
@@ -1073,13 +1100,13 @@ __global__ void
 
 
             if (tx == 0) {
-                // 結果書き込み
+                // 結果書き込み（この列・この行の最良MV）
                 d.d.vectors[blky * nBlkX + blkx] = result[0].xy;
 
                 // 結果の書き込みが終わるのを待つ
                 __threadfence();
 
-                // 完了を書き込み
+                // 完了を書き込み（行単位）。隣接列がこの情報を参照して待機解除する。
                 d.d.prog[blkx] = blky;
             }
 
@@ -1236,12 +1263,13 @@ __global__ void kl_prepare_search(
     next += batchid;
 
     if (bx < nBlkX && by < nBlkY) {
-        //
+        // 各ブロックのSearchBlockを初期化し、探索境界/予測候補/ペナルティ/λをセットアップ
         int blkIdx = bx + by * nBlkX;
         int sad = sads[blkIdx];
         SearchBlock *data = &dst_blocks[blkIdx];
 
-        // 進捗は-1に初期化しておく
+        // 進捗配列・動的列カウンタを初期化
+        // prog[x]: 列xの完了行（初期は-1） / next: 次に処理する列（初期0）
         if (by == 0) {
             prog[bx] = -1;
 
@@ -1251,12 +1279,15 @@ __global__ void kl_prepare_search(
             }
         }
 
+        // ブロック先頭座標（パディング+オーバーラップ）
         int x = nPad + nBlkSizeOvr * bx;
         int y = nPad + nBlkSizeOvr * by;
-        //
+        // レベルに応じてパディングをスケール（nLogScaleはピラミッド段数に対応）
         int nPaddingScaled = nPad >> nLogScale;
 
-        int nDxMax = nPel * (nExtendedWidth - x - nBlkSize - nPad + nPaddingScaled) - 1;
+        // 探索境界（サブピクセル単位: nPelスケール）
+        //   (x,y) にブロックを配置したとき、参照ブロックが拡張画像境界を越えない最大/最小Δx,Δy
+        int nDxMax = nPel * (nExtendedWidth  - x - nBlkSize - nPad + nPaddingScaled) - 1;
         int nDyMax = nPel * (nExptendedHeight - y - nBlkSize - nPad + nPaddingScaled) - 1;
         int nDxMin = -nPel * (x - nPad + nPaddingScaled);
         int nDyMin = -nPel * (y - nPad + nPaddingScaled);
@@ -1266,24 +1297,25 @@ __global__ void kl_prepare_search(
         data->data[2] = nDxMin;
         data->data[3] = nDyMin;
 
-        int p1 = -2; // -2はzeroベクタ
-        // Left (or right) predictor
+        // 近傍/階層予測のインデックスを構築（センチネル/面オフセットを使用）
+        int p1 = -2; // -2: Zero MV sentinel（左が無い場合のフォールバックにも使用）
+        // Left (or right) predictor（同期モードにより参照面が異なる）
 #if ANALYZE_SYNC == 0
         if (bx > 0) {
-            p1 = blkIdx - 1 + nBlkX * nBlkY;
+            p1 = blkIdx - 1 + nBlkX * nBlkY; // コピー面（vectors_copy）を参照
         }
 #elif ANALYZE_SYNC == 1
         if (bx > 0) {
-            p1 = blkIdx - 1;
+            p1 = blkIdx - 1; // 同一面（vectors）を参照（左依存）
         }
 #else // ANALYZE_SYNC == 2
         if (bx >= 2) {
-            p1 = blkIdx - (1 + (bx & 1));
+            p1 = blkIdx - (1 + (bx & 1)); // 奇偶で片側列に依存
         }
 #endif
 
         int p2 = -2;
-        // Up predictor
+        // Up predictor（先頭行はmedianでleftを選ばせるためp1を再利用）
         if (by > 0) {
             p2 = blkIdx - nBlkX;
         } else {
@@ -1292,7 +1324,7 @@ __global__ void kl_prepare_search(
         }
 
         int p3 = -2;
-        // bottom-right pridictor (from coarse level)
+        // bottom-right predictor (from coarse level)
         if ((by < nBlkY - 1) && (bx < nBlkX - 1)) {
             // すでに書き換わっている可能性がありそれでも計算は可能だが、
             // デバッグのため非決定動作は避けたいので
@@ -1300,26 +1332,31 @@ __global__ void kl_prepare_search(
             p3 = blkIdx + nBlkX + 1 + nBlkX * nBlkY;
         }
 
+        // 予測候補の指定（センチネル/インデックス）
         data->data[4] = -2;    // zero
         data->data[5] = -1;    // global
-        data->data[6] = blkIdx;// predictor
-        data->data[7] = p1;    //  predictors[1]
-        data->data[8] = p2;    //  predictors[2]
-        data->data[9] = p3;    //  predictors[3]
+        data->data[6] = blkIdx;// predictor（自ブロック: 現レベルのvectors[]）
+        data->data[7] = p1;    // predictors[1]（Left/片側）
+        data->data[8] = p2;    // predictors[2]（Up or Left）
+        data->data[9] = p3;    // predictors[3]（BR from coarse: コピー面）
 
+        // 現在レベルの予測ベクトルをコピー面にも保存（以降の参照一貫性を担保）
         short2 pred = vectors[blkIdx];
 
         // 計算中に前のレベルから求めたベクタを保持したいのでコピーしておく
         vectors_copy[blkIdx] = pred;
 
+        // 予測ベクトル成分（x,y）
         data->data[10] = pred.x;
         data->data[11] = pred.y;
 
+        // ペナルティ・λ設定
         data->dataf[0] = penaltyZero;
         data->dataf[1] = penaltyGlobal;
-        data->dataf[2] = 0;
+        data->dataf[2] = 0;           // 予測器用ペナルティ（現状0）
         data->dataf[3] = penaltyNew;
 
+        // λ: 画素SADに応じてモーションコスト重みを調整。先頭行は0でモーション抑制。
         sad_t lambda = nLambdaLevel * lsad / (lsad + (sad >> 1)) * lsad / (lsad + (sad >> 1));
         if (by == 0) lambda = 0;
         data->dataf[4] = lambda;
@@ -2460,14 +2497,19 @@ public:
         int nImgPitchY, int nImgPitchUV, cudaStream_t stream);
 
     int GetSearchBlockSize() {
+        // PlaneOfBlocksCUDA::blocks で使用する1ブロックあたりの一時構造体サイズ
+        // SearchBlock は探索過程の一時データ（候補、閾値、境界など）を保持する。
         return sizeof(SearchBlock);
     }
 
     int GetSearchBatchSize() {
+        // PlaneOfBlocksCUDA::batchdata に相当（1バッチ分のカーネル引数パック）
+        // SearchBatchData は入出力ポインタやピッチ、各種パラメータをまとめる。
         return sizeof(SearchBatchData<pixel_t>);
     }
 
     int GetLoadMVBatchSize() {
+        // PlaneOfBlocksCUDA::loadmvbatchdata に相当（MVロード/ストア用の引数パック）
         return sizeof(LoadMVBatchData<pixel_t>);
     }
 
@@ -2487,12 +2529,12 @@ public:
         SearchBatchData<pixel_t>* hsearchbatch = new SearchBatchData<pixel_t>[ANALYZE_MAX_BATCH];
 
         {
-            // set zeroMV and globalMV
+            // 定数ベクトル領域（vectors先頭N_CONST_VEC）を初期化: 0=ZeroMV, 1=GlobalMV
             kl_init_const_vec<<<dim3(2, batch), 1, 0, stream>>>(vectors, vectorsPitch, globalMV, nPel);
             DEBUG_SYNC;
         }
 
-        { // prepare
+        { // prepare: 各ブロックの探索設定・SAD書込先・ベクトル領域を関連付ける
             dim3 threads(32, 8);
             dim3 blocks(nblocks(nBlkX, threads.x), nblocks(nBlkY, threads.y), batch);
             kl_prepare_search<<<blocks, threads, 0, stream>>>(
@@ -2511,8 +2553,7 @@ public:
 
         int fidx = ((nBlkSize == 8) ? 0 : (nBlkSize == 16) ? 4 : 8) + ((nPel == 1) ? 0 : 2) + (chroma ? 0 : 1);
 
-        { // search
-          // デバッグ用
+        { // search: 探索本体（EXHAUSTIVE/HEXなど）を起動
 #define CPU_EMU true
             LAUNCH_SEARCH table[2][12] =
             {
@@ -2547,11 +2588,12 @@ public:
             };
 #undef CPU_EMU
 
-            // パラメータを作る
+            // GPUカーネルに渡すパラメータブロック（1バッチ単位）を作る
             for (int i = 0; i < batch; ++i) {
                 hsearchbatch[i].d.out = out[i];
                 hsearchbatch[i].d.blocks = searchblocks + nBlkX * nBlkY * i;
                 hsearchbatch[i].d.vectors = vectors + vectorsPitch * i;
+                // sads は pitch 付きの2Dレイアウト（sadPitch）。各ブロック1要素の最終SADを格納
                 hsearchbatch[i].d.dst_sad = sads + sadPitch * i;
                 hsearchbatch[i].d.prog = prog + nBlkX * i;
                 hsearchbatch[i].d.next = next + i;
@@ -2565,7 +2607,7 @@ public:
 
             CUDA_CHECK(cudaMemcpyAsync(searchbatch, hsearchbatch, sizeof(searchbatch[0]) * batch, cudaMemcpyHostToDevice, stream));
 
-            // 終わったら解放するコールバックを追加
+            // 終了後にホスト側の一時配列を解放するコールバックを追加
             env->DeviceAddCallback([](void* arg) {
                 delete[]((SearchBatchData<pixel_t>*)arg);
                 }, hsearchbatch);
@@ -2574,6 +2616,7 @@ public:
             if (analyzef == NULL) {
                 env->ThrowError("Unsupported search param combination");
             }
+            // threads=BLK_SIZE*8, blocks=(batch, min(nBlkX,nBlkY)) で並列探索を起動
             (this->*analyzef)(batch, searchbatch, nBlkX, nBlkY, nPad,
                 nPitchY, nPitchUV, nImgPitchY, nImgPitchUV, stream);
 
@@ -2581,7 +2624,7 @@ public:
             //d.Show();
         }
 
-        { // calc sad
+        { // calc sad: 各ブロックの最終SADを計算し sads に格納（pitch付き2D配置）
             LAUNCH_CALC_ALL_SAD table[] =
             {
               &Me::launch_calc_all_sad<8, 1, true>,
@@ -2651,7 +2694,7 @@ public:
         LoadMVBatchData<pixel_t>* loadmvbatch = (LoadMVBatchData<pixel_t>*)_loadmvbatch;
         LoadMVBatchData<pixel_t>* hloadmvbatch = new LoadMVBatchData<pixel_t>[batch];
 
-        // パラメータを作る
+        // パラメータを作る（src → vectors/sads へ転送。vectors/sads は2Dピッチ配置）
         for (int i = 0; i < batch; i++) {
             hloadmvbatch[i].d.src = src[i];
             hloadmvbatch[i].d.out = out[i];
@@ -2661,13 +2704,14 @@ public:
 
         CUDA_CHECK(cudaMemcpyAsync(loadmvbatch, hloadmvbatch, sizeof(loadmvbatch[0]) * batch, cudaMemcpyHostToDevice, stream));
 
-        //終わったら解放するコールバックを追加
+        // 終了後にホスト側の一時配列を解放するコールバックを追加
         env->DeviceAddCallback([](void* arg) {
             delete[]((LoadMVBatchData<pixel_t>*)arg);
             }, hloadmvbatch);
 
         dim3 threads(threadcount);
         dim3 blocks(nblocks(nBlkCount, threads.x), batch);
+        // vectors/sadsは2Dピッチ（vectorsPitch/sadPitch）でブロック連続に配置
         kl_load_mv_batch<<<blocks, threads, 0, stream>>>(loadmvbatch, nBlkCount);
         DEBUG_SYNC;
     }
