@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <memory>
 #include <deque>
+#include <cstdlib>
 
 #include <cuda_runtime_api.h>
 #include <cuda_device_runtime_api.h>
@@ -849,7 +850,8 @@ __global__ void
         SearchBatchData<pixel_t> *pdata,
         int nBlkX, int nBlkY, int nPad,
         int nPitchY, int nPitchUV,
-        int nImgPitchY, int nImgPitchUV
+        int nImgPitchY, int nImgPitchUV,
+        int staticColumns
     ) {
     // threads=BLK_SIZE*8
     // このkernelの並列構成と役割:
@@ -877,13 +879,18 @@ __global__ void
     __syncthreads();
 
     __shared__ int blkx; // 動的に割り当てられる列インデックス。全スレッドで共有するためshared使用。
+    int columnLoop = 0;
 
     //for (int blkx = blockIdx.x; blkx < nBlkX; blkx += gridDim.x) {
     while (true) {
         if (tx == 0) {
-            // d.d.next: 次に処理すべき列（blkx）を示す共有カウンタ。
-            // 複数のgrid.yブロックでatomicAddにより列を取り合う（動的ワーク配分）。
-            blkx = atomicAdd(d.d.next, 1);
+            if (staticColumns) {
+                blkx = blockIdx.y + columnLoop * gridDim.y;
+            } else {
+                // d.d.next: 次に処理すべき列（blkx）を示す共有カウンタ。
+                // 複数のgrid.yブロックでatomicAddにより列を取り合う（動的ワーク配分）。
+                blkx = atomicAdd(d.d.next, 1);
+            }
         }
         __syncthreads();
 
@@ -1113,6 +1120,7 @@ __global__ void
             // 共有メモリ保護
             __syncthreads();
         }
+        ++columnLoop;
     }
 }
 
@@ -2462,10 +2470,11 @@ public:
         static_assert(SearchBatchData<pixel_t>::LEN <= BLK_SIZE * 8);
         dim3 threads(BLK_SIZE * 8);
         // 余分なブロックは仕事せずに終了するので問題ない
+        const bool staticColumns = std::getenv("KMV_SEARCH_DYNAMIC_COLUMNS") == nullptr;
         dim3 blocks(batch, std::min(nBlkX, nBlkY));
         kl_search<pixel_t, BLK_SIZE, SEARCH, NPEL, CHROMA, CPU_EMU><<<blocks, threads, 0, stream>>>(
             pdata, nBlkX, nBlkY, nPad,
-            nPitchY, nPitchUV, nImgPitchY, nImgPitchUV);
+            nPitchY, nPitchUV, nImgPitchY, nImgPitchUV, staticColumns ? 1 : 0);
         DEBUG_SYNC;
     }
 
