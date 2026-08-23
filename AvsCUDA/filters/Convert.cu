@@ -36,7 +36,9 @@
 #include "../AvsCUDA.h"
 #include <avs/alignment.h>
 #include "rgy_osdep.h"
+#if ENABLE_X86_SIMD
 #include <smmintrin.h>
+#endif
 #include <tuple>
 #include <map>
 
@@ -46,6 +48,7 @@
 #include "Copy.h"
 
 
+#if ENABLE_X86_SIMD
 RGY_TARGET("sse4.1")
 static RGY_FORCEINLINE __m128i af_mm_min_epu16_sse41(__m128i a, __m128i b) {
 	return _mm_min_epu16(a, b);
@@ -73,6 +76,7 @@ static RGY_FORCEINLINE __m128i af_mm_packus_epi32(__m128i a, __m128i b) {
 		return _MM_PACKUS_EPI32(a, b);
 	}
 }
+#endif
 
 //--------------- planar bit depth conversions
 // todo: separate file?
@@ -580,6 +584,7 @@ static void convert_rgb_uint16_to_8_c(const BYTE *srcp, BYTE *dstp, int src_rows
 	}
 }
 
+#if ENABLE_X86_SIMD
 template<uint8_t sourcebits, int dither_mode, int TARGET_DITHER_BITDEPTH, int rgb_step>
 static void convert_rgb_uint16_to_8_sse2(const BYTE *srcp, BYTE *dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch)
 {
@@ -737,6 +742,7 @@ static void convert_rgb_uint16_to_8_sse2(const BYTE *srcp, BYTE *dstp, int src_r
 		srcp0 += src_pitch;
 	}
 }
+#endif
 
 // idea borrowed from fmtConv
 #define FS_OPTIMIZED_SERPENTINE_COEF
@@ -911,6 +917,7 @@ static void convert_uint16_to_8_c(const BYTE *srcp, BYTE *dstp, int src_rowsize,
 	}
 }
 
+#if ENABLE_X86_SIMD
 template<uint8_t sourcebits>
 static void convert_uint16_to_8_sse2(const BYTE *srcp8, BYTE *dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch)
 {
@@ -946,7 +953,9 @@ static void convert_uint16_to_8_sse2(const BYTE *srcp8, BYTE *dstp, int src_rows
 #pragma warning(push)
 #pragma warning(disable: 4305 4309)
 #endif
+#endif
 
+#if ENABLE_X86_SIMD
 template<uint8_t sourcebits, uint8_t TARGET_DITHER_BITDEPTH>
 static void convert_uint16_to_8_dither_sse2(const BYTE *srcp8, BYTE *dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch)
 {
@@ -1178,6 +1187,7 @@ void convert_32_to_uintN_sse(const BYTE *srcp8, BYTE *dstp8, int src_rowsize, in
 		srcp += src_pitch;
 	}
 }
+#endif
 #ifdef _MSC_VER
 #pragma warning(pop)
 #endif
@@ -1274,6 +1284,7 @@ static void convert_rgb_8_to_uint16_c(const BYTE *srcp, BYTE *dstp, int src_rows
 #if 0
 // leave it here, maybe we can use it later
 // Tricky simd implementation of integer div 255 w/o division
+#if ENABLE_X86_SIMD
 static inline __m128i Div_4xint32_by_255(const __m128i &esi, const __m128i &magic255div) {
 	// simd implementation of
 	/*
@@ -1322,7 +1333,9 @@ static inline __m128i Div_4xint32_by_255(const __m128i &esi, const __m128i &magi
 	// 4 results in the lower 16 bits of 4x32 bit register
 }
 #endif
+#endif
 
+#if ENABLE_X86_SIMD
 template<uint8_t targetbits>
 static void convert_rgb_8_to_uint16_sse2(const BYTE *srcp8, BYTE *dstp8, int src_rowsize, int src_height, int src_pitch, int dst_pitch)
 {
@@ -1440,6 +1453,7 @@ static void convert_rgb_8_to_uint16_sse2(const BYTE *srcp8, BYTE *dstp8, int src
 		srcp += src_pitch;
 	} // for y
 }
+#endif
 
 
 // YUV: bit shift 8 to 10-12-14-16 bits
@@ -1463,6 +1477,7 @@ static void convert_8_to_uint16_c(const BYTE *srcp, BYTE *dstp8, int src_rowsize
 	}
 }
 
+#if ENABLE_X86_SIMD
 template<uint8_t targetbits>
 static void convert_8_to_uint16_sse2(const BYTE *srcp, BYTE *dstp8, int src_rowsize, int src_height, int src_pitch, int dst_pitch)
 {
@@ -1542,6 +1557,7 @@ static void convert_rgb_uint16_to_uint16_sse2(const BYTE *srcp8, BYTE *dstp8, in
 		srcp += src_pitch;
 	}
 }
+#endif
 
 
 // RGB full range: 10-12-14-16 <=> 10-12-14-16 bits
@@ -1725,6 +1741,7 @@ static void convert_uint16_to_uint16_dither_c(const BYTE *srcp8, BYTE *dstp8, in
 	}
 }
 
+#if ENABLE_X86_SIMD
 template<bool expandrange, uint8_t shiftbits>
 static void convert_uint16_to_uint16_sse2(const BYTE *srcp8, BYTE *dstp8, int src_rowsize, int src_height, int src_pitch, int dst_pitch)
 {
@@ -1769,6 +1786,7 @@ static void convert_uint16_to_uint16_sse2(const BYTE *srcp8, BYTE *dstp8, int sr
 		srcp += src_pitch;
 	}
 }
+#endif
 
 // 8 bit to float, 16/14/12/10 bits to float
 template<typename pixel_t, uint8_t sourcebits, bool chroma, bool fulls, bool fulld>
@@ -1866,6 +1884,31 @@ static void convert_uintN_to_float_c(const BYTE *srcp, BYTE *dstp, int src_rowsi
 	jl	SHORT $LL7@convert_ui
 	*/
 }
+
+#if !ENABLE_X86_SIMD
+template<uint8_t sourcebits, int dither_mode, int TARGET_DITHER_BITDEPTH, int rgb_step>
+static void convert_rgb_uint16_to_8_sse2(const BYTE *srcp, BYTE *dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch) { convert_rgb_uint16_to_8_c<sourcebits, dither_mode, TARGET_DITHER_BITDEPTH, rgb_step>(srcp, dstp, src_rowsize, src_height, src_pitch, dst_pitch); }
+template<uint8_t sourcebits>
+static void convert_uint16_to_8_sse2(const BYTE *srcp, BYTE *dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch) { convert_uint16_to_8_c<sourcebits, 0, 8>(srcp, dstp, src_rowsize, src_height, src_pitch, dst_pitch); }
+template<uint8_t sourcebits, uint8_t TARGET_DITHER_BITDEPTH>
+static void convert_uint16_to_8_dither_sse2(const BYTE *srcp, BYTE *dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch) { convert_uint16_to_8_c<sourcebits, 0, TARGET_DITHER_BITDEPTH>(srcp, dstp, src_rowsize, src_height, src_pitch, dst_pitch); }
+template<typename pixel_t, uint8_t targetbits, bool chroma, bool fulls, bool fulld>
+void convert_32_to_uintN_sse(const BYTE *srcp, BYTE *dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch) { convert_32_to_uintN_c<pixel_t, targetbits, chroma, fulls, fulld>(srcp, dstp, src_rowsize, src_height, src_pitch, dst_pitch); }
+template<typename pixel_t, uint8_t targetbits, bool chroma, bool fulls, bool fulld>
+void convert_32_to_uintN_avx2(const BYTE *srcp, BYTE *dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch) { convert_32_to_uintN_c<pixel_t, targetbits, chroma, fulls, fulld>(srcp, dstp, src_rowsize, src_height, src_pitch, dst_pitch); }
+template<uint8_t targetbits>
+static void convert_rgb_8_to_uint16_sse2(const BYTE *srcp, BYTE *dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch) { convert_rgb_8_to_uint16_c<targetbits>(srcp, dstp, src_rowsize, src_height, src_pitch, dst_pitch); }
+template<uint8_t targetbits>
+static void convert_8_to_uint16_sse2(const BYTE *srcp, BYTE *dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch) { convert_8_to_uint16_c<targetbits>(srcp, dstp, src_rowsize, src_height, src_pitch, dst_pitch); }
+template<uint8_t sourcebits, uint8_t targetbits, bool hasSSE4>
+static void convert_rgb_uint16_to_uint16_sse2(const BYTE *srcp, BYTE *dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch) { convert_rgb_uint16_to_uint16_c<sourcebits, targetbits>(srcp, dstp, src_rowsize, src_height, src_pitch, dst_pitch); }
+template<bool expandrange, uint8_t shiftbits>
+static void convert_uint16_to_uint16_sse2(const BYTE *srcp, BYTE *dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch) { convert_uint16_to_uint16_c<expandrange, shiftbits>(srcp, dstp, src_rowsize, src_height, src_pitch, dst_pitch); }
+template<bool expandrange, uint8_t shiftbits>
+void convert_uint16_to_uint16_c_avx(const BYTE *srcp, BYTE *dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch) { convert_uint16_to_uint16_c<expandrange, shiftbits>(srcp, dstp, src_rowsize, src_height, src_pitch, dst_pitch); }
+template<bool expandrange, uint8_t shiftbits>
+void convert_uint16_to_uint16_c_avx2(const BYTE *srcp, BYTE *dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch) { convert_uint16_to_uint16_c<expandrange, shiftbits>(srcp, dstp, src_rowsize, src_height, src_pitch, dst_pitch); }
+#endif
 
 BitDepthConvFuncPtr get_convert_to_8_function(bool full_scale, int source_bitdepth, int dither_mode, int dither_bitdepth, int rgb_step, int cpu)
 {
@@ -3033,4 +3076,3 @@ PVideoFrame __stdcall ConvertBits::GetFrame(int n, IScriptEnvironment* env_)
 	}
 	return dst;
 }
-

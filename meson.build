@@ -17,7 +17,17 @@ threads_dep = dependency('threads')
 cuda_args = [ '-DENABLE_CUDA=1' ]
 cpp_args = [ '-DENABLE_CUDA=1' ]
 link_args = []
+is_x86 = host_machine.cpu_family() in ['x86', 'x86_64']
+if is_x86
+  cpp_args += ['-DENABLE_X86_SIMD=1']
+  cuda_args += ['-DENABLE_X86_SIMD=1']
+else
+  cpp_args += ['-DENABLE_X86_SIMD=0']
+  cuda_args += ['-DENABLE_X86_SIMD=0']
+endif
 if host_machine.system() == 'linux'
+  # 各プラグインのAVS_linkageをAviSynth本体の同名シンボルから分離する
+  link_args += [ '-Wl,-Bsymbolic' ]
   cpp_args += [ '-std=c++17',
     '-fno-operator-names',
     '-Wno-unused-variable',

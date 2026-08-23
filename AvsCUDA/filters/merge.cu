@@ -42,8 +42,10 @@
 #include "merge.h"
 #include "merge_avx2.h"
 #include "../core/internal.h"
+#if ENABLE_X86_SIMD
 #include <emmintrin.h>
 #include <smmintrin.h>
+#endif
 #include "avs/alignment.h"
 #include <stdint.h>
 #include "../AvsCUDA.h"
@@ -57,6 +59,7 @@
  *     weighted_merge_chroma_yuy2
  * -----------------------------------
  */
+#if ENABLE_X86_SIMD
 static void weighted_merge_chroma_yuy2_sse2(BYTE *src, const BYTE *chroma, int pitch, int chroma_pitch,int width, int height, int weight, int invweight )
 {
   __m128i round_mask = _mm_set1_epi32(0x4000);
@@ -102,6 +105,7 @@ static void weighted_merge_chroma_yuy2_sse2(BYTE *src, const BYTE *chroma, int p
     chroma += chroma_pitch;
   }
 }
+#endif
 
 #ifdef X86_32
 static void weighted_merge_chroma_yuy2_mmx(BYTE *src, const BYTE *chroma, int pitch, int chroma_pitch,int width, int height, int weight, int invweight )
@@ -167,6 +171,7 @@ static void weighted_merge_chroma_yuy2_c(BYTE *src, const BYTE *chroma, int pitc
  *      weighted_merge_luma_yuy2
  * -----------------------------------
  */
+#if ENABLE_X86_SIMD
 static void weighted_merge_luma_yuy2_sse2(BYTE *src, const BYTE *luma, int pitch, int luma_pitch,int width, int height, int weight, int invweight)
 {
   __m128i round_mask = _mm_set1_epi32(0x4000);
@@ -215,6 +220,7 @@ static void weighted_merge_luma_yuy2_sse2(BYTE *src, const BYTE *luma, int pitch
     luma += luma_pitch;
   }
 }
+#endif
 
 #ifdef X86_32
 static void weighted_merge_luma_yuy2_mmx(BYTE *src, const BYTE *luma, int pitch, int luma_pitch,int width, int height, int weight, int invweight)
@@ -283,6 +289,7 @@ static void weighted_merge_luma_yuy2_c(BYTE *src, const BYTE *luma, int pitch, i
  *          replace_luma_yuy2
  * -----------------------------------
  */
+#if ENABLE_X86_SIMD
 static void replace_luma_yuy2_sse2(BYTE *src, const BYTE *luma, int pitch, int luma_pitch,int width, int height)
 {
   int mod16_width = width / 16 * 16;
@@ -312,6 +319,7 @@ static void replace_luma_yuy2_sse2(BYTE *src, const BYTE *luma, int pitch, int l
     luma += luma_pitch;
   }
 }
+#endif
 
 #ifdef X86_32
 static void replace_luma_yuy2_mmx(BYTE *src, const BYTE *luma, int pitch, int luma_pitch,int width, int height)
@@ -361,6 +369,7 @@ static void replace_luma_yuy2_c(BYTE *src, const BYTE *luma, int pitch, int luma
  *            average_plane
  * -----------------------------------
  */
+#if ENABLE_X86_SIMD
 template<typename pixel_t>
 static void average_plane_sse2(BYTE *p1, const BYTE *p2, int p1_pitch, int p2_pitch, int rowsize, int height) {
   // width is RowSize here
@@ -418,6 +427,7 @@ static void average_plane_isse(BYTE *p1, const BYTE *p2, int p1_pitch, int p2_pi
   _mm_empty();
 }
 #endif
+#endif
 
 // for uint8_t and uint16_t
 template<typename pixel_t>
@@ -449,6 +459,7 @@ static void average_plane_c_float(BYTE *p1, const BYTE *p2, int p1_pitch, int p2
  * -----------------------------------
  */
 
+#if ENABLE_X86_SIMD
 template<bool lessthan16bit>
 void weighted_merge_planar_uint16_sse2(BYTE *p1, const BYTE *p2, int p1_pitch, int p2_pitch, int rowsize, int height, float weight_f, int weight_i, int invweight_i) {
   __m128i round_mask = _mm_set1_epi32(0x4000);
@@ -661,6 +672,7 @@ void weighted_merge_planar_mmx(BYTE *p1, const BYTE *p2, int p1_pitch, int p2_pi
   _mm_empty();
 }
 #endif
+#endif
 
 
 template<typename pixel_t>
@@ -686,6 +698,24 @@ void weighted_merge_planar_c_float(BYTE *p1, const BYTE *p2, int p1_pitch, int p
     p2 += p2_pitch;
   }
 }
+
+#if !ENABLE_X86_SIMD
+static void weighted_merge_chroma_yuy2_sse2(BYTE *src, const BYTE *chroma, int pitch, int chroma_pitch, int width, int height, int weight, int invweight) { weighted_merge_chroma_yuy2_c(src, chroma, pitch, chroma_pitch, width, height, weight, invweight); }
+static void weighted_merge_luma_yuy2_sse2(BYTE *src, const BYTE *luma, int pitch, int luma_pitch, int width, int height, int weight, int invweight) { weighted_merge_luma_yuy2_c(src, luma, pitch, luma_pitch, width, height, weight, invweight); }
+static void replace_luma_yuy2_sse2(BYTE *src, const BYTE *luma, int pitch, int luma_pitch, int width, int height) { replace_luma_yuy2_c(src, luma, pitch, luma_pitch, width, height); }
+template<typename pixel_t>
+static void average_plane_sse2(BYTE *p1, const BYTE *p2, int p1_pitch, int p2_pitch, int rowsize, int height) { average_plane_c<pixel_t>(p1, p2, p1_pitch, p2_pitch, rowsize, height); }
+template<typename pixel_t>
+void average_plane_avx2(BYTE *p1, const BYTE *p2, int p1_pitch, int p2_pitch, int rowsize, int height) { average_plane_c<pixel_t>(p1, p2, p1_pitch, p2_pitch, rowsize, height); }
+static void average_plane_sse2_float(BYTE *p1, const BYTE *p2, int p1_pitch, int p2_pitch, int rowsize, int height) { average_plane_c_float(p1, p2, p1_pitch, p2_pitch, rowsize, height); }
+template<bool lessthan16bit>
+void weighted_merge_planar_uint16_sse2(BYTE *p1, const BYTE *p2, int p1_pitch, int p2_pitch, int rowsize, int height, float weight_f, int weight_i, int invweight_i) { weighted_merge_planar_c<uint16_t>(p1, p2, p1_pitch, p2_pitch, rowsize, height, weight_f, weight_i, invweight_i); }
+void weighted_merge_planar_sse2(BYTE *p1, const BYTE *p2, int p1_pitch, int p2_pitch, int rowsize, int height, float weight_f, int weight_i, int invweight_i) { weighted_merge_planar_c<uint8_t>(p1, p2, p1_pitch, p2_pitch, rowsize, height, weight_f, weight_i, invweight_i); }
+void weighted_merge_planar_avx2(BYTE *p1, const BYTE *p2, int p1_pitch, int p2_pitch, int rowsize, int height, float weight_f, int weight_i, int invweight_i) { weighted_merge_planar_c<uint8_t>(p1, p2, p1_pitch, p2_pitch, rowsize, height, weight_f, weight_i, invweight_i); }
+template<bool lessthan16bit>
+void weighted_merge_planar_uint16_avx2(BYTE *p1, const BYTE *p2, int p1_pitch, int p2_pitch, int rowsize, int height, float weight_f, int weight_i, int invweight_i) { weighted_merge_planar_c<uint16_t>(p1, p2, p1_pitch, p2_pitch, rowsize, height, weight_f, weight_i, invweight_i); }
+void weighted_merge_planar_sse2_float(BYTE *p1, const BYTE *p2, int p1_pitch, int p2_pitch, int rowsize, int height, float weight_f, int weight_i, int invweight_i) { weighted_merge_planar_c_float(p1, p2, p1_pitch, p2_pitch, rowsize, height, weight_f, weight_i, invweight_i); }
+#endif
 
 
 /********************************************************************

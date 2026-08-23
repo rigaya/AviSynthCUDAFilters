@@ -661,6 +661,7 @@ void cpu_merge_deblock(
     }
 }
 
+#if ENABLE_X86_SIMD
 template <typename pixel_t>
 void cpu_deblock_kernel_avx(const pixel_t* src, int src_pitch,
     uint16_t* dst, int dst_pitch, float thresh, float half, int shift, int maxv);
@@ -717,6 +718,8 @@ void cpu_deblock_avx(
         }
     }
 }
+
+#endif
 
 template <int RADIUS>
 __global__ void kl_max_vh(uint8_t* dst, uint8_t* src, int width, int height, int pitch) {
@@ -1549,6 +1552,7 @@ class KDeblock : public KFMFilterBase {
                 cpu_deblock_show(dst, dstPitch, width, height, qpvi.width, qpvi.height,
                     qpTmp, qpTmpPitch, thresh_a, thresh_b);
             }
+#if ENABLE_X86_SIMD
         } else if (!IS_CUDA && IsAVX2Available()) {
             //if(false) {
               // CPU‚ÅAVX2‚ªŽg‚¦‚é‚È‚çAVX2”Å
@@ -1564,6 +1568,7 @@ class KDeblock : public KFMFilterBase {
                 qpTmp, qpTmpPitch, count - 1,
                 deblockShift, deblockMaxV, strength, thresh_a, thresh_b,
                 width, height, dst, dstPitch, mergeShift, mergeMaxV);
+#endif
         } else {
             VideoInfo tmpvi = vi;
             tmpvi.width = (width + 7 + 8 * 2) & ~7;

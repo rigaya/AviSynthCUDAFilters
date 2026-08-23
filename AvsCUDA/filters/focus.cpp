@@ -37,11 +37,16 @@
 #include <vector>
 #include <avs/alignment.h>
 #include "../core/internal.h"
+#if ENABLE_X86_SIMD
 #include <emmintrin.h>
+#endif
+#if ENABLE_X86_SIMD
 #include <smmintrin.h>
+#endif
 #include <stdint.h>
 #include "../AvsCUDA.h"
 
+#if ENABLE_X86_SIMD
 RGY_TARGET("sse4.1")
 static RGY_FORCEINLINE __m128i af_mm_packus_epi32_sse41(__m128i a, __m128i b) {
 	return _mm_packus_epi32(a, b);
@@ -85,6 +90,7 @@ static RGY_FORCEINLINE __m128i af_mm_min_epu16(__m128i a, __m128i b) {
 		return _MM_MIN_EPU16(a, b);
 	}
 }
+#endif
 
 
 /********************************************************************
@@ -173,6 +179,7 @@ static void af_vertical_c_float(BYTE* line_buf8, BYTE* dstp8, const int height, 
     }
 }
 
+#if ENABLE_X86_SIMD
 static void af_vertical_sse2_float(BYTE* line_buf, BYTE* dstp, const int height, const int pitch, const int row_size, const float amount) {
 
   const float center_weight = amount;
@@ -448,11 +455,13 @@ static void af_vertical_mmx(BYTE* line_buf, BYTE* dstp, int height, int pitch, i
 }
 
 #endif
+#endif
 
 template<typename pixel_t>
 static void af_vertical_process(BYTE* line_buf, BYTE* dstp, size_t height, size_t pitch, size_t row_size, int half_amount, int bits_per_pixel, IScriptEnvironment* env) {
   size_t width = row_size / sizeof(pixel_t);
   // only for 8/16 bit, float separated
+#if ENABLE_X86_SIMD
   if (sizeof(pixel_t) == 1 && (env->GetCPUFlags() & CPUF_AVX2) && IsPtrAligned(dstp, 32) && width >= 32) {
     //pitch of aligned frames is always >= 32 so we'll just process some garbage if width is not mod32
     af_vertical_avx2(line_buf, dstp, (int)height, (int)pitch, (int)width, half_amount);
@@ -483,6 +492,7 @@ static void af_vertical_process(BYTE* line_buf, BYTE* dstp, size_t height, size_
     }
   } else
 #endif
+#endif
   {
       af_vertical_c<pixel_t>(line_buf, dstp, (int)height, (int)pitch, (int)width, half_amount, bits_per_pixel);
   }
@@ -490,10 +500,13 @@ static void af_vertical_process(BYTE* line_buf, BYTE* dstp, size_t height, size_
 
 static void af_vertical_process_float(BYTE* line_buf, BYTE* dstp, size_t height, size_t pitch, size_t row_size, double amountd, IScriptEnvironment* env) {
     size_t width = row_size / sizeof(float);
+#if ENABLE_X86_SIMD
     if ((env->GetCPUFlags() & CPUF_SSE2) && IsPtrAligned(dstp, 16) && width >= 16) {
         //pitch of aligned frames is always >= 16 so we'll just process some garbage if width is not mod16
         af_vertical_sse2_float(line_buf, dstp, (int)height, (int)pitch, (int)row_size, (float)amountd);
-    } else {
+    } else
+#endif
+    {
         af_vertical_c_float(line_buf, dstp, (int)height, (int)pitch, (int)width, (float)amountd);
     }
 }
@@ -613,6 +626,7 @@ static void af_horizontal_rgb32_64_c(BYTE* dstp8, size_t height, size_t pitch8, 
 
 
 //implementation is not in-place. Unaligned reads will be slow on older intels but who cares
+#if ENABLE_X86_SIMD
 static void af_horizontal_rgb32_sse2(BYTE* dstp, const BYTE* srcp, size_t dst_pitch, size_t src_pitch, size_t height, size_t width, size_t amount) {
   size_t width_bytes = width * 4;
   size_t loop_limit = width_bytes - 16;
@@ -771,6 +785,7 @@ static void af_horizontal_rgb32_mmx(BYTE* dstp, const BYTE* srcp, size_t dst_pit
 }
 
 #endif
+#endif
 
 // -------------------------------------
 // Blur/Sharpen Horizontal YUY2 C++ Code
@@ -807,6 +822,7 @@ static void af_horizontal_yuy2_c(BYTE* p, int height, int pitch, int width, int 
 }
 
 
+#if ENABLE_X86_SIMD
 static RGY_FORCEINLINE __m128i af_blend_yuy2_sse2(__m128i &left, __m128i &center, __m128i &right, __m128i &luma_mask,
                                              __m128i &center_weight, __m128i &outer_weight, __m128i &round_mask) {
   __m128i left_luma = _mm_and_si128(left, luma_mask); //0 Y5 0 Y4 0 Y3 0 Y2 0 Y1 0 Y0 0 Y-1 0 Y-2
@@ -1016,6 +1032,7 @@ static void af_horizontal_yuy2_mmx(BYTE* dstp, const BYTE* srcp, size_t dst_pitc
 
 
 #endif
+#endif
 
 // --------------------------------------
 // Blur/Sharpen Horizontal RGB24 C++ Code
@@ -1131,6 +1148,7 @@ static void af_horizontal_planar_float_c(BYTE* dstp8, size_t height, size_t pitc
     }
 }
 
+#if ENABLE_X86_SIMD
 static void af_horizontal_planar_sse2(BYTE* dstp, size_t height, size_t pitch, size_t width, size_t amount) {
   size_t mod16_width = (width / 16) * 16;
   size_t sse_loop_limit = width == mod16_width ? mod16_width - 16 : mod16_width;
@@ -1371,6 +1389,7 @@ static void af_horizontal_planar_mmx(BYTE* dstp, size_t height, size_t pitch, si
 
 
 #endif
+#endif
 
 
 static void copy_frame(const PVideoFrame &src, PVideoFrame &dst, IScriptEnvironment *env, const int *planes, int plane_count) {
@@ -1406,6 +1425,7 @@ PVideoFrame __stdcall AdjustFocusH::GetFrame(int n, IScriptEnvironment* env)
       BYTE* q = dst->GetWritePtr(plane);
       int pitch = dst->GetPitch(plane);
       int height = dst->GetHeight(plane);
+#if ENABLE_X86_SIMD
       if (pixelsize == 1 && (env->GetCPUFlags() & CPUF_AVX2) && IsPtrAligned(q, 32) && row_size > 32) {
         af_horizontal_planar_avx2(q, height, pitch, row_size, half_amount);
       }
@@ -1430,7 +1450,9 @@ PVideoFrame __stdcall AdjustFocusH::GetFrame(int n, IScriptEnvironment* env)
         else if (pixelsize == 4 && (env->GetCPUFlags() & CPUF_SSE2) && IsPtrAligned(q, 16) && row_size > 16) {
           af_horizontal_planar_float_sse2(q, height, pitch, row_size, (float)amountd);
         }
-        else {
+        else
+#endif
+        {
           switch (pixelsize) {
           case 1: af_horizontal_planar_c<uint8_t>(q, height, pitch, row_size, half_amount, bits_per_pixel); break;
           case 2: af_horizontal_planar_c<uint16_t>(q, height, pitch, row_size, half_amount, bits_per_pixel); break;
@@ -1444,6 +1466,7 @@ PVideoFrame __stdcall AdjustFocusH::GetFrame(int n, IScriptEnvironment* env)
     if (vi.IsYUY2()) {
       BYTE* q = dst->GetWritePtr();
       const int pitch = dst->GetPitch();
+#if ENABLE_X86_SIMD
       if ((env->GetCPUFlags() & CPUF_SSE2) && IsPtrAligned(src->GetReadPtr(), 16) && vi.width>8) {
         af_horizontal_yuy2_sse2(dst->GetWritePtr(), src->GetReadPtr(), dst->GetPitch(), src->GetPitch(), vi.height, vi.width, half_amount);
       } else
@@ -1452,12 +1475,14 @@ PVideoFrame __stdcall AdjustFocusH::GetFrame(int n, IScriptEnvironment* env)
         af_horizontal_yuy2_mmx(dst->GetWritePtr(), src->GetReadPtr(), dst->GetPitch(), src->GetPitch(), vi.height, vi.width, half_amount);
       } else
 #endif
+#endif
       {
         copy_frame(src, dst, env, planesYUV, 1); //in-place
         af_horizontal_yuy2_c(q,vi.height,pitch,vi.width,half_amount);
       }
     }
     else if (vi.IsRGB32() || vi.IsRGB64()) {
+#if ENABLE_X86_SIMD
       if ((pixelsize==1) && (env->GetCPUFlags() & CPUF_SSE2) && IsPtrAligned(src->GetReadPtr(), 16) && vi.width>4) {
         //this one is NOT in-place
         af_horizontal_rgb32_sse2(dst->GetWritePtr(), src->GetReadPtr(), dst->GetPitch(), src->GetPitch(), vi.height, vi.width, half_amount);
@@ -1476,6 +1501,7 @@ PVideoFrame __stdcall AdjustFocusH::GetFrame(int n, IScriptEnvironment* env)
       { //so as this one
         af_horizontal_rgb32_mmx(dst->GetWritePtr(), src->GetReadPtr(), dst->GetPitch(), src->GetPitch(), vi.height, vi.width, half_amount);
       } else
+#endif
 #endif
       {
         copy_frame(src, dst, env, planesYUV, 1);
@@ -1712,6 +1738,7 @@ static void accumulate_line_yuy2_c(BYTE* c_plane, const BYTE** planeP, int plane
   }
 }
 
+#if ENABLE_X86_SIMD
 static RGY_FORCEINLINE __m128i ts_multiply_repack_sse2(const __m128i &src, const __m128i &div, __m128i &halfdiv, __m128i &zero) {
   __m128i acc = _mm_madd_epi16(src, div);
   acc = _mm_add_epi32(acc, halfdiv);
@@ -1949,8 +1976,10 @@ static void accumulate_line_mmx(BYTE* c_plane, const BYTE** planeP, int planes, 
 }
 
 #endif
+#endif
 
 static void accumulate_line_yuy2(BYTE* c_plane, const BYTE** planeP, int planes, size_t width, BYTE threshold_luma, BYTE threshold_chroma, int div, bool aligned16, IScriptEnvironment* env) {
+#if ENABLE_X86_SIMD
   if ((env->GetCPUFlags() & CPUF_SSE2) && aligned16 && width >= 16) {
     accumulate_line_sse2<false, false>(c_plane, planeP, planes, width, threshold_luma | (threshold_chroma << 8), div);
   } else
@@ -1959,6 +1988,7 @@ static void accumulate_line_yuy2(BYTE* c_plane, const BYTE** planeP, int planes,
     accumulate_line_mmx(c_plane, planeP, planes, width, threshold_luma | (threshold_chroma << 8), div); //yuy2 is always at least mod8
   } else
 #endif
+#endif
     accumulate_line_yuy2_c(c_plane, planeP, planes, width, threshold_luma, threshold_chroma, div);
 }
 
@@ -1966,6 +1996,7 @@ static void accumulate_line(BYTE* c_plane, const BYTE** planeP, int planes, size
   // todo SSE2 float
   // threshold == 255: simple average
   bool maxThreshold = (threshold == 255);
+#if ENABLE_X86_SIMD
   if ((pixelsize == 2) && (env->GetCPUFlags() & CPUF_SSE4) && aligned16 && rowsize >= 16) {
     // <maxThreshold, hasSSE4, lessThan16bit>
     if(maxThreshold) {
@@ -2017,6 +2048,7 @@ static void accumulate_line(BYTE* c_plane, const BYTE** planeP, int planes, size
     }
   } else
 #endif
+#endif
     switch(pixelsize) {
     case 1:
       if (maxThreshold)
@@ -2041,6 +2073,7 @@ static void accumulate_line(BYTE* c_plane, const BYTE** planeP, int planes, size
 
 // may also used from conditionalfunctions
 // packed rgb template masks out alpha plane for RGB32
+#if ENABLE_X86_SIMD
 template<bool packedRGB3264>
 int calculate_sad_sse2(const BYTE* cur_ptr, const BYTE* other_ptr, int cur_pitch, int other_pitch, size_t rowsize, size_t height)
 {
@@ -2211,6 +2244,7 @@ static int calculate_sad_isse(const BYTE* cur_ptr, const BYTE* other_ptr, int cu
   return result;
 }
 #endif
+#endif
 
 template<typename pixel_t>
 static int64_t calculate_sad_c(const BYTE* cur_ptr, const BYTE* other_ptr, int cur_pitch, int other_pitch, size_t rowsize, size_t height)
@@ -2242,9 +2276,52 @@ static int64_t calculate_sad_c(const BYTE* cur_ptr, const BYTE* other_ptr, int c
     return (int64_t)sum; // for int, scaling to 8 bit range is done outside
 }
 
+#if !ENABLE_X86_SIMD
+template<bool packedRGB3264>
+int calculate_sad_sse2(const BYTE* cur_ptr, const BYTE* other_ptr, int cur_pitch, int other_pitch, size_t rowsize, size_t height)
+{
+  int64_t sum = 0;
+  for (size_t y = 0; y < height; ++y) {
+    for (size_t x = 0; x < rowsize; ++x) {
+      if (!packedRGB3264 || (x & 3) != 3)
+        sum += std::abs(int(cur_ptr[x]) - int(other_ptr[x]));
+    }
+    cur_ptr += cur_pitch;
+    other_ptr += other_pitch;
+  }
+  return (int)sum;
+}
+
+template<typename pixel_t, bool packedRGB3264>
+int64_t calculate_sad_8_or_16_sse2(const BYTE* cur_ptr, const BYTE* other_ptr, int cur_pitch, int other_pitch, size_t rowsize, size_t height)
+{
+  int64_t sum = 0;
+  const size_t width = rowsize / sizeof(pixel_t);
+  for (size_t y = 0; y < height; ++y) {
+    const auto *cur = reinterpret_cast<const pixel_t *>(cur_ptr);
+    const auto *other = reinterpret_cast<const pixel_t *>(other_ptr);
+    for (size_t x = 0; x < width; ++x) {
+      if (!packedRGB3264 || (x & 3) != 3)
+        sum += std::abs(int64_t(cur[x]) - int64_t(other[x]));
+    }
+    cur_ptr += cur_pitch;
+    other_ptr += other_pitch;
+  }
+  return sum;
+}
+
+template int calculate_sad_sse2<false>(const BYTE*, const BYTE*, int, int, size_t, size_t);
+template int calculate_sad_sse2<true>(const BYTE*, const BYTE*, int, int, size_t, size_t);
+template int64_t calculate_sad_8_or_16_sse2<uint8_t, false>(const BYTE*, const BYTE*, int, int, size_t, size_t);
+template int64_t calculate_sad_8_or_16_sse2<uint8_t, true>(const BYTE*, const BYTE*, int, int, size_t, size_t);
+template int64_t calculate_sad_8_or_16_sse2<uint16_t, false>(const BYTE*, const BYTE*, int, int, size_t, size_t);
+template int64_t calculate_sad_8_or_16_sse2<uint16_t, true>(const BYTE*, const BYTE*, int, int, size_t, size_t);
+#endif
+
 // sum of byte-diffs.
 static int64_t calculate_sad(const BYTE* cur_ptr, const BYTE* other_ptr, int cur_pitch, int other_pitch, size_t rowsize, size_t height, int pixelsize, int bits_per_pixel, IScriptEnvironment* env) {
   // todo: sse for float
+#if ENABLE_X86_SIMD
   if ((pixelsize == 1) && (env->GetCPUFlags() & CPUF_SSE2) && IsPtrAligned(cur_ptr, 16) && IsPtrAligned(other_ptr, 16) && rowsize >= 16) {
     return (int64_t)calculate_sad_sse2<false>(cur_ptr, other_ptr, cur_pitch, other_pitch, rowsize, height);
   }
@@ -2257,6 +2334,7 @@ static int64_t calculate_sad(const BYTE* cur_ptr, const BYTE* other_ptr, int cur
   if ((pixelsize == 2) && (env->GetCPUFlags() & CPUF_SSE2) && IsPtrAligned(cur_ptr, 16) && IsPtrAligned(other_ptr, 16) && rowsize >= 16) {
     return calculate_sad_8_or_16_sse2<uint16_t, false>(cur_ptr, other_ptr, cur_pitch, other_pitch, rowsize, height) >> (bits_per_pixel-8);
   }
+#endif
 
   switch(pixelsize) {
   case 1: return calculate_sad_c<uint8_t>(cur_ptr, other_ptr, cur_pitch, other_pitch, rowsize, height);

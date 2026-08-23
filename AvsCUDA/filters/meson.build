@@ -45,27 +45,31 @@ avscuda_filters_lib = static_library('avscuda_filters',
   pic : true,
 )
 
-# AVX2ファイル用のライブラリ
-avx2_lib = static_library('avscuda_filters_avx2',
-  avx2_sources,
-  include_directories : include_directories('..', '../../KUtil', '../../common'),
-  dependencies : [avisynth_dep, cuda_dep, threads_dep, common_dep],
-  cpp_args : avx2_args,
-  cuda_args : cuda_args,
-  pic : true,
-)
+avscuda_filters_link_with = [avscuda_filters_lib]
+if is_x86
+  # AVX2ファイル用のライブラリ
+  avx2_lib = static_library('avscuda_filters_avx2',
+    avx2_sources,
+    include_directories : include_directories('..', '../../KUtil', '../../common'),
+    dependencies : [avisynth_dep, cuda_dep, threads_dep, common_dep],
+    cpp_args : avx2_args,
+    cuda_args : cuda_args,
+    pic : true,
+  )
 
-# AVXファイル用のライブラリ
-avx_lib = static_library('avscuda_filters_avx',
-  avx_sources,
-  include_directories : include_directories('..', '../../KUtil', '../../common'),
-  dependencies : [avisynth_dep, cuda_dep, threads_dep, common_dep],
-  cpp_args : avx_args,
-  cuda_args : cuda_args,
-  pic : true,
-)
+  # AVXファイル用のライブラリ
+  avx_lib = static_library('avscuda_filters_avx',
+    avx_sources,
+    include_directories : include_directories('..', '../../KUtil', '../../common'),
+    dependencies : [avisynth_dep, cuda_dep, threads_dep, common_dep],
+    cpp_args : avx_args,
+    cuda_args : cuda_args,
+    pic : true,
+  )
+  avscuda_filters_link_with += [avx2_lib, avx_lib]
+endif
 
 avscuda_filters_dep = declare_dependency(
-  link_with : [avscuda_filters_lib, avx2_lib, avx_lib],
+  link_with : avscuda_filters_link_with,
   include_directories : include_directories('.')
-) 
+)

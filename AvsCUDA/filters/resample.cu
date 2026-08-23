@@ -43,11 +43,14 @@
 
 #include <type_traits>
 // Intrinsics for SSE4.1, SSSE3, SSE3, SSE2, ISSE and MMX
+#if ENABLE_X86_SIMD
 #include <emmintrin.h>
 #include <smmintrin.h>
+#endif
 #include <algorithm>
 
 
+#if ENABLE_X86_SIMD
 RGY_TARGET("sse4.1")
 static RGY_FORCEINLINE __m128i af_mm_packus_epi32_sse41(__m128i a, __m128i b) {
 	return _mm_packus_epi32(a, b);
@@ -75,7 +78,9 @@ static RGY_FORCEINLINE __m128i af_mm_min_epu16(__m128i a, __m128i b) {
 		return _MM_MIN_EPU16(a, b);
 	}
 }
+#endif
 
+#if ENABLE_X86_SIMD
 /***************************************
 ********* Templated SSE Loader ********
 ***************************************/
@@ -115,6 +120,7 @@ RGY_FORCEINLINE __m128 simd_loadps_unaligned(const float* adr)
 {
 	return _mm_loadu_ps(adr);
 }
+#endif
 
 
 // cuda vector primitives
@@ -428,6 +434,7 @@ void launch_resize_v_planar(
 		pixel_offset, pixel_coefficient, vector_width, target_height, limit, filter_size);
 }
 
+#if ENABLE_X86_SIMD
 #ifdef X86_32
 static void resize_v_mmx_planar(BYTE* dst, const BYTE* src, int dst_pitch, int src_pitch, ResamplingProgram* program, int width, int target_height, int bits_per_pixel, const int* pitch_table, const void* storage)
 {
@@ -711,6 +718,7 @@ static void resize_v_ssse3_planar(BYTE* dst, const BYTE* src, int dst_pitch, int
 		current_coeff += filter_size;
 	}
 }
+#endif
 
 RGY_FORCEINLINE static void resize_v_create_pitch_table(int* table, int pitch, int height) {
 	table[0] = 0;
@@ -937,6 +945,7 @@ std::unique_ptr<DeviceLocalData<float>> make_h_coeff_for_cuda(
 		new DeviceLocalData<float>(data.get(), aligned_width * filter_size, env));
 }
 
+#if ENABLE_X86_SIMD
 //-------- 128 bit float Horizontals
 
 RGY_FORCEINLINE static void process_one_pixel_h_float(const float *src, int begin, int i, float *&current_coeff, __m128 &result) {
@@ -1793,6 +1802,7 @@ static void resizer_h_ssse3_8(BYTE* dst, const BYTE* src, int dst_pitch, int src
 		src += src_pitch;
 	}
 }
+#endif
 
 /********************************************************************
 ***** Declare index of new filters for Avisynth's filter engine *****
@@ -2186,6 +2196,18 @@ PVideoFrame __stdcall FilteredResizeH::GetFrame(int n, IScriptEnvironment* env_)
 
 ResamplerH FilteredResizeH::GetResampler(int CPU, bool aligned, int pixelsize, int bits_per_pixel, ResamplingProgram* program, IScriptEnvironment2* env)
 {
+#if !ENABLE_X86_SIMD
+  AVS_UNUSED(CPU);
+  AVS_UNUSED(aligned);
+  AVS_UNUSED(bits_per_pixel);
+  AVS_UNUSED(program);
+  AVS_UNUSED(env);
+  switch (pixelsize) {
+  case 1: return resize_h_c_planar<uint8_t>;
+  case 2: return resize_h_c_planar<uint16_t>;
+  default: return resize_h_c_planar<float>;
+  }
+#else
   AVS_UNUSED(aligned);
 
 	if (pixelsize == 1)
@@ -2319,6 +2341,7 @@ ResamplerH FilteredResizeH::GetResampler(int CPU, bool aligned, int pixelsize, i
 		}
 		return resize_h_c_planar<float>;
 	}
+#endif
 }
 
 FilteredResizeH::~FilteredResizeH(void)
@@ -2535,6 +2558,18 @@ PVideoFrame __stdcall FilteredResizeV::GetFrame(int n, IScriptEnvironment* env_)
 
 ResamplerV FilteredResizeV::GetResampler(int CPU, bool aligned, int pixelsize, int bits_per_pixel, void*& storage, ResamplingProgram* program)
 {
+#if !ENABLE_X86_SIMD
+  AVS_UNUSED(CPU);
+  AVS_UNUSED(aligned);
+  AVS_UNUSED(bits_per_pixel);
+  AVS_UNUSED(storage);
+  AVS_UNUSED(program);
+  switch (pixelsize) {
+  case 1: return resize_v_c_planar<uint8_t>;
+  case 2: return resize_v_c_planar<uint16_t>;
+  default: return resize_v_c_planar<float>;
+  }
+#else
   AVS_UNUSED(storage);
 	if (program->filter_size == 1) {
 		// Fast pointresize
@@ -2624,6 +2659,7 @@ ResamplerV FilteredResizeV::GetResampler(int CPU, bool aligned, int pixelsize, i
 			}
 		}
 	}
+#endif
 }
 
 FilteredResizeV::~FilteredResizeV(void)
@@ -2795,4 +2831,3 @@ AVSValue __cdecl FilteredResize::Create_SincResize(AVSValue args, void*, IScript
 	auto f = SincFilter(args[7].AsInt(4));
 	return CreateResize(args[0].AsClip(), args[1].AsInt(), args[2].AsInt(), &args[3], &f, env);
 }
-

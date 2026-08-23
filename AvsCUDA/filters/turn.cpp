@@ -42,7 +42,9 @@
 #include "turn.h"
 #include "resample.h"
 #include "../core/internal.h"
+#if ENABLE_X86_SIMD
 #include <tmmintrin.h>
+#endif
 #include <stdint.h>
 
 
@@ -95,6 +97,7 @@ void turn_left_plane_8_c(const BYTE* srcp, BYTE* dstp, int src_rowsize, int src_
 }
 
 
+#if ENABLE_X86_SIMD
 static RGY_FORCEINLINE __m128i movehl(const __m128i& x)
 {
     __m128 ps = _mm_castsi128_ps(x);
@@ -173,6 +176,10 @@ void turn_left_plane_8_sse2(const BYTE* srcp, BYTE* dstp, int src_rowsize, int s
 {
     turn_right_plane_8_sse2(srcp + (src_height - 1) * src_pitch, dstp + (src_rowsize - 1) * dst_pitch, src_rowsize, src_height, -src_pitch, -dst_pitch);
 }
+#else
+void turn_right_plane_8_sse2(const BYTE* srcp, BYTE* dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch) { turn_right_plane_8_c(srcp, dstp, src_rowsize, src_height, src_pitch, dst_pitch); }
+void turn_left_plane_8_sse2(const BYTE* srcp, BYTE* dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch) { turn_left_plane_8_c(srcp, dstp, src_rowsize, src_height, src_pitch, dst_pitch); }
+#endif
 
 
 void turn_right_plane_16_c(const BYTE* srcp, BYTE* dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch)
@@ -187,6 +194,7 @@ void turn_left_plane_16_c(const BYTE* srcp, BYTE* dstp, int src_rowsize, int src
 }
 
 
+#if ENABLE_X86_SIMD
 static RGY_FORCEINLINE void transpose_16x4x8_sse2(const BYTE* srcp, BYTE* dstp, const int src_pitch, const int dst_pitch)
 {
     __m128i a03 = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(srcp + src_pitch * 0)); //a0 a1 a2 a3
@@ -252,6 +260,10 @@ void turn_left_plane_16_sse2(const BYTE* srcp, BYTE* dstp, int src_rowsize, int 
 {
     turn_right_plane_16_sse2(srcp + src_pitch * (src_height - 1), dstp + dst_pitch * (src_rowsize / 2 - 1), src_rowsize, src_height, -src_pitch, -dst_pitch);
 }
+#else
+void turn_right_plane_16_sse2(const BYTE* srcp, BYTE* dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch) { turn_right_plane_16_c(srcp, dstp, src_rowsize, src_height, src_pitch, dst_pitch); }
+void turn_left_plane_16_sse2(const BYTE* srcp, BYTE* dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch) { turn_left_plane_16_c(srcp, dstp, src_rowsize, src_height, src_pitch, dst_pitch); }
+#endif
 
 
 void turn_right_plane_32_c(const BYTE* srcp, BYTE* dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch)
@@ -266,6 +278,7 @@ void turn_left_plane_32_c(const BYTE* srcp, BYTE* dstp, int src_rowsize, int src
 }
 
 
+#if ENABLE_X86_SIMD
 static RGY_FORCEINLINE void transpose_32x4x4_sse2(const BYTE* srcp, BYTE* dstp, const int src_pitch, const int dst_pitch)
 {
     __m128i a03 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(srcp + src_pitch * 0)); //a0 a1 a2 a3
@@ -322,6 +335,10 @@ void turn_left_plane_32_sse2(const BYTE* srcp, BYTE* dstp, int src_rowsize, int 
 {
     turn_right_plane_32_sse2(srcp + src_pitch * (src_height - 1), dstp + dst_pitch * (src_rowsize / 4 - 1), src_rowsize, src_height, -src_pitch, -dst_pitch);
 }
+#else
+void turn_right_plane_32_sse2(const BYTE* srcp, BYTE* dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch) { turn_right_plane_32_c(srcp, dstp, src_rowsize, src_height, src_pitch, dst_pitch); }
+void turn_left_plane_32_sse2(const BYTE* srcp, BYTE* dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch) { turn_left_plane_32_c(srcp, dstp, src_rowsize, src_height, src_pitch, dst_pitch); }
+#endif
 
 
 // on RGB, TurnLeft and TurnRight are reversed.
@@ -395,6 +412,7 @@ void turn_right_rgb64_c(const BYTE* srcp, BYTE* dstp, int src_rowsize, int src_h
 }
 
 
+#if ENABLE_X86_SIMD
 static inline void turn_right_plane_64_sse2(const BYTE* srcp, BYTE* dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch)
 {
     const BYTE* s0 = srcp + src_pitch * (src_height - 1);
@@ -439,6 +457,10 @@ void turn_right_rgb64_sse2(const BYTE* srcp, BYTE* dstp, int src_rowsize, int sr
 {
     turn_right_plane_64_sse2(srcp + src_pitch * (src_height - 1), dstp + dst_pitch * (src_rowsize / 8 - 1), src_rowsize, src_height, -src_pitch, -dst_pitch);
 }
+#else
+void turn_left_rgb64_sse2(const BYTE* srcp, BYTE* dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch) { turn_left_rgb64_c(srcp, dstp, src_rowsize, src_height, src_pitch, dst_pitch); }
+void turn_right_rgb64_sse2(const BYTE* srcp, BYTE* dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch) { turn_right_rgb64_c(srcp, dstp, src_rowsize, src_height, src_pitch, dst_pitch); }
+#endif
 
 
 
@@ -499,6 +521,7 @@ static void turn_180_plane_c(const BYTE* srcp, BYTE* dstp, int src_rowsize, int 
 }
 
 
+#if ENABLE_X86_SIMD
 template <typename T, int INSTRUCTION_SET=CPUF_SSE2>
 static void turn_180_plane_xsse(const BYTE* srcp, BYTE* dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch)
 {
@@ -560,6 +583,13 @@ static void turn_180_plane_xsse(const BYTE* srcp, BYTE* dstp, int src_rowsize, i
         turn_180_plane_c<T>(srcp + w, dstp, src_rowsize - w, src_height, src_pitch, dst_pitch);
     }
 }
+#else
+template <typename T, int INSTRUCTION_SET=CPUF_SSE2>
+static void turn_180_plane_xsse(const BYTE* srcp, BYTE* dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch)
+{
+    turn_180_plane_c<T>(srcp, dstp, src_rowsize, src_height, src_pitch, dst_pitch);
+}
+#endif
 
 
 static void turn_180_yuy2(const BYTE* srcp, BYTE* dstp, int src_rowsize, int src_height, int src_pitch, int dst_pitch)

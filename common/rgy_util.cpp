@@ -27,6 +27,25 @@
 
 #include "rgy_util.h"
 #include "rgy_codepage.h"
+
+const char *codepage_str(uint32_t codepage) {
+    switch (codepage) {
+    case CODE_PAGE_SJIS:
+        return "CP932";
+    case CODE_PAGE_EUC_JP:
+        return "EUC-JP";
+    case CODE_PAGE_UTF16_LE:
+        return "UTF16LE";
+    case CODE_PAGE_UTF16_BE:
+        return "UTF16BE";
+    case CODE_PAGE_JIS:
+        return "ISO2022JP";
+    case CODE_PAGE_UTF8:
+        return "UTF-8";
+    default:
+        return nullptr;
+    }
+}
 #if !(defined(_WIN32) || defined(_WIN64))
 #include <iconv.h>
 #endif

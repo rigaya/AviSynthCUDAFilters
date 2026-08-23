@@ -6,7 +6,9 @@
 
 #include <stdint.h>
 #include <algorithm>
+#if ENABLE_X86_SIMD
 #include <emmintrin.h>
+#endif
 #include "CommonFunctions.h"
 #include "VectorFunctions.cuh"
 #include "ReduceKernel.cuh"
@@ -79,8 +81,8 @@ public:
     , isRGB(vi.IsPlanarRGB() || vi.IsPlanarRGBA())
   {
     PNeoEnv env = env_;
-    // Ç±ÇÍÇ™ÇÊÇ¢ÇÃÇ©ÇÕÇÌÇ©ÇÁÇÒÇ™...CUDAÇÃèÍçáÇÃÇ›AEP_FRAME_ALIGNÇå©Ç…çsÇ≠ÇÊÇ§Ç…ÇµÇ»Ç¢Ç∆ÅA
-    // CPUÇÃèÍçáÇ…[Align]: New allocated frame is not aligned !!!Ç™èoÇƒÇµÇ‹Ç§
+    // „Åì„Çå„Åå„Çà„ÅÑ„ÅÆ„Åã„ÅØ„Çè„Åã„Çâ„Çì„Åå...CUDA„ÅÆÂ†¥Âêà„ÅÆ„ÅøAEP_FRAME_ALIGN„ÇíË¶ã„Å´Ë°å„Åè„Çà„ÅÜ„Å´„Åó„Å™„ÅÑ„Å®„ÄÅ
+    // CPU„ÅÆÂ†¥Âêà„Å´[Align]: New allocated frame is not aligned !!!„ÅåÂá∫„Å¶„Åó„Åæ„ÅÜ
     if (IS_CUDA) {
       systemFrameAlign = (int)env->GetProperty(AEP_FRAME_ALIGN);
 		  systemPlaneAlign = (int)env->GetProperty(AEP_PLANE_ALIGN);
@@ -96,7 +98,7 @@ public:
 
     PVideoFrame src = child->GetFrame(n, env);
     if (IsAligned(src)) {
-      // ä˘Ç…AlignÇ≥ÇÍÇƒÇ¢ÇÈ
+      // Êó¢„Å´Align„Åï„Çå„Å¶„ÅÑ„Çã
       return src;
     }
 
@@ -484,6 +486,7 @@ static void launch_invert_rgb(pixel_t* ptr, int width, int height, int el_pitch,
   DEBUG_SYNC;
 }
 
+#if ENABLE_X86_SIMD
 static void invert_frame_sse2(BYTE* frame, int pitch, int width, int height, int mask) {
   __m128i maskv = _mm_set1_epi32(mask);
 
@@ -560,6 +563,7 @@ static void invert_plane_mmx(BYTE* frame, int pitch, int width, int height)
 }
 
 #endif
+#endif
 
 //mod4 width is required
 static void invert_frame_c(BYTE* frame, int pitch, int width, int height, int mask) {
@@ -628,6 +632,11 @@ static void invert_plane_float_c(BYTE* frame, int pitch, int row_size, int heigh
     frame += pitch;
   }
 }
+
+#if !ENABLE_X86_SIMD
+static void invert_frame_sse2(BYTE* frame, int pitch, int width, int height, int mask) { invert_frame_c(frame, pitch, width, height, mask); }
+static void invert_frame_uint16_sse2(BYTE* frame, int pitch, int width, int height, uint64_t mask64) { invert_frame_uint16_c(frame, pitch, width, height, mask64); }
+#endif
 
 static void invert_frame(BYTE* frame, int pitch, int rowsize, int height, int mask, uint64_t mask64, int pixelsize, PNeoEnv env) {
   if (IS_CUDA) {

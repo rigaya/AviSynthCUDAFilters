@@ -7,7 +7,9 @@
 #include "avs/alignment.h"
 #include "focus.h"
 
+#if ENABLE_X86_SIMD
 #include <emmintrin.h>
+#endif
 #include "CommonFunctions.h"
 #include "VectorFunctions.cuh"
 #include "ReduceKernel.cuh"
@@ -90,6 +92,7 @@ static double get_sum_of_pixels_c(const BYTE* srcp8, size_t height, size_t width
 }
 
 // sum: sad with zero
+#if ENABLE_X86_SIMD
 static double get_sum_of_pixels_sse2(const BYTE* srcp, size_t height, size_t width, size_t pitch) {
   size_t mod16_width = width / 16 * 16;
   int64_t result = 0;
@@ -138,6 +141,11 @@ static double get_sum_of_pixels_isse(const BYTE* srcp, size_t height, size_t wid
   result += _mm_cvtsi64_si32(sum);
   _mm_empty();
   return (double)result;
+}
+#endif
+#else
+static double get_sum_of_pixels_sse2(const BYTE* srcp, size_t height, size_t width, size_t pitch) {
+  return get_sum_of_pixels_c<uint8_t>(srcp, height, width, pitch);
 }
 #endif
 

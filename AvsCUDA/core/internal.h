@@ -42,7 +42,9 @@
 #include <string.h>
 
 #include <avisynth.h>
+#if ENABLE_X86_SIMD
 #include <emmintrin.h>
+#endif
 #include <string>
 #include "rgy_osdep.h"
 
@@ -111,6 +113,7 @@ static __inline bool IsClose(int a, int b, unsigned threshold)
 static __inline bool IsCloseFloat(float a, float b, float threshold)
 { return (a-b+threshold <= threshold*2); }
 
+#if ENABLE_X86_SIMD
 // useful SIMD helpers
 
 // sse2 replacement of _mm_mullo_epi32 in SSE4.1
@@ -184,6 +187,7 @@ RGY_FORCEINLINE __m128i _MM_MAX_EPU16(__m128i x, __m128i y)
 // unsigned short div 255
 #define SSE2_DIV255_U16(x) _mm_srli_epi16(_mm_mulhi_epu16(x, _mm_set1_epi16((short)0x8081)), 7)
 #define AVX2_DIV255_U16(x) _mm256_srli_epi16(_mm256_mulhi_epu16(x, _mm256_set1_epi16((short)0x8081)), 7)
+#endif
 
 #ifndef MAKEFOURCC
 #define MAKEFOURCC(ch0, ch1, ch2, ch3)                              \
