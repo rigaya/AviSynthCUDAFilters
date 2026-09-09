@@ -1,0 +1,69 @@
+# 配布用パッケージのビルド環境。
+# ABIフロアを下げるためUbuntu20.04を基盤とする (glibc 2.31 / GLIBCXX 3.4.28 / CXXABI 1.3.12)。
+# これによりRHEL/Rocky/AlmaLinux 9 (GLIBCXX 3.4.29) やDebian 12を含む
+# 現行ディストリを単一ビルドでカバーできる。
+FROM ubuntu:20.04
+
+ARG DEBIAN_FRONTEND=noninteractive \
+    OSVER=ubuntu2004 \
+    LOCAL_USER_ID=1000 \
+    LOCAL_GROUP_ID=1000 \
+    CUDA_VER_MAJOR=12 \
+    CUDA_VER_MINOR=9 \
+    CUDA_KEYRING_NAME=cuda-keyring_1.1-1_all.deb \
+    MESON_VER=1.11.2 \
+    CMAKE_VER=3.31.6 \
+    GCC_VER=10
+
+# meson / cmake はいずれも apt 版 (20.04 では meson 0.53 / cmake 3.16.3) ではなく pip 版を使う。
+#
+# meson: 1.2 以降は cuda dependency が cudart_static を既定でリンクするため、
+#   生成物が libcudart.so に依存しなくなり、CUDA Toolkit 非導入の環境でも動作する。
+# cmake: AviSynth+ は 3.19.5 未満だと旧来の find_package(CUDA) 経路に入り、
+#   libcudart_static.a を生パスでリンクするだけになる。この .a は shm_open /
+#   shm_unlink を参照するが、glibc 2.34 未満ではこれらが librt にあるため
+#   リンクに失敗する。3.19.5 以降なら CUDA::cudart_static が rt / pthread / dl を
+#   INTERFACE 依存として持ち込むので解決する。
+#
+# コンパイラは apt 版 gcc-10 を既定にする (20.04 の標準は gcc 9.4)。
+# gcc 9 では以下が通らないため。
+#   - masktools: _mm256_loadu2_m128 が gcc 10 で追加された組み込み関数のため未定義になる
+#   - NNEDI3: nnedi3_intrinsic_FMA_x64.cpp が <cstddef> を直接includeしておらず
+#     ptrdiff_t が未定義になる (gcc 10 以降は他ヘッダ経由で推移的に入る)
+# focal の libstdc++6 は元から gcc 10 由来 (10.5.0 / GLIBCXX 3.4.28) なので、
+# gcc-10 を使ってもABIフロアは上がらない。
+RUN apt update \
+    && apt-get install -y \
+      sudo \
+      wget \
+      curl \
+      git \
+      ninja-build \
+      pkg-config \
+      checkinstall \
+      autoconf \
+      automake \
+      libtool \
+      build-essential \
+      gcc-${GCC_VER} \
+      g++-${GCC_VER} \
+      python3-pip \
+      xz-utils \
+    && python3 -m pip install --no-cache-dir "meson==${MESON_VER}" "cmake==${CMAKE_VER}" \
+    && wget -q https://developer.download.nvidia.com/compute/cuda/repos/${OSVER}/x86_64/${CUDA_KEYRING_NAME} \
+    && dpkg -i ${CUDA_KEYRING_NAME} \
+    && apt-get update \
+    && apt-get -y install cuda-compiler-${CUDA_VER_MAJOR}-${CUDA_VER_MINOR} cuda-cudart-dev-${CUDA_VER_MAJOR}-${CUDA_VER_MINOR} cuda-nvrtc-dev-${CUDA_VER_MAJOR}-${CUDA_VER_MINOR} libcurand-dev-${CUDA_VER_MAJOR}-${CUDA_VER_MINOR} libnpp-dev-${CUDA_VER_MAJOR}-${CUDA_VER_MINOR} cuda-nvml-dev-${CUDA_VER_MAJOR}-${CUDA_VER_MINOR} \
+    && rm -f ${CUDA_KEYRING_NAME} \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s /usr/local/cuda-${CUDA_VER_MAJOR}.${CUDA_VER_MINOR} /usr/local/cuda \
+    && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-${GCC_VER} 100 \
+         --slave /usr/bin/g++ g++ /usr/bin/g++-${GCC_VER} \
+    && update-alternatives --install /usr/bin/cc  cc  /usr/bin/gcc-${GCC_VER} 100 \
+    && update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-${GCC_VER} 100
+
+RUN useradd -u $LOCAL_USER_ID -m --user-group --shell /bin/bash rigaya
+RUN groupmod -og $LOCAL_GROUP_ID rigaya
+WORKDIR /root
+COPY . .
