@@ -1,5 +1,9 @@
+# meson 1.2 未満では cuda dependency が cudart を動的リンクするため、
+# 生成物が libcudart.so.* を要求してしまう。
+# 配布バイナリを CUDA Toolkit 非依存にするため meson 1.2 以降を必須とする。
 project('AviSynthCUDAFilters', 'cpp', 'cuda',
   version : '1.0.0',
+  meson_version : '>= 1.2.0',
   default_options : [
     'cpp_std=c++17',
     'warning_level=0',
@@ -10,7 +14,8 @@ project('AviSynthCUDAFilters', 'cpp', 'cuda',
 
 # 依存関係の確認
 avisynth_dep = dependency('avisynth', required : true)
-cuda_dep = dependency('cuda', version : '>=11.0', required : true)
+# static : true で cudart_static をリンクする (meson 1.2 以降の既定だが、明示しておく)
+cuda_dep = dependency('cuda', version : '>=11.0', required : true, static : true)
 threads_dep = dependency('threads')
 
 # ビルド設定
