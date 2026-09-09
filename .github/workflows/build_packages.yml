@@ -14,26 +14,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - dockerimg: ubuntu2404_cuda12
-            osver: Ubuntu24.04
-            pkgtype: deb
+          # Ubuntu20.04を基盤とする単一ビルド。
+          # ABIフロアがglibc 2.31 / GLIBCXX 3.4.28 / CXXABI 1.3.12まで下がるため、
+          # RHEL/Rocky/AlmaLinux 9 (GLIBCXX 3.4.29) やDebian 12を含む
+          # 現行ディストリを1つの成果物でカバーできる。
+          - dockerimg: ubuntu2004_cuda12
+            osver: linux
             arch: x86_64
-          - dockerimg: ubuntu2204_cuda11
-            osver: Ubuntu22.04
-            pkgtype: deb
-            arch: x86_64
-          #- dockerimg: ubuntu2004_cuda11
-          #  osver: Ubuntu20.04
-          #  pkgtype: deb
-          #  arch: x86_64
           #- dockerimg: ubuntu2204_cuda11_aarch64
-          #  pkgtype: deb
+          #  osver: linux_aarch64
           #  arch: arm64
 
     env:
       DOCKER_FILE:  docker/docker_${{ matrix.dockerimg }}
       DOCKER_IMAGE: ${{ matrix.dockerimg }}
-      PKG_TYPE: ${{ matrix.pkgtype }}
 
     name: Upload Release Asset
     runs-on: ubuntu-latest
@@ -77,37 +71,62 @@ jobs:
           docker run -dit --rm -v ${{ steps.prep.outputs.output_dir }}:/output --name build_pkg ${{ steps.prep.outputs.tagged_image }}
           docker exec build_pkg ./scripts/buildAviSynthPlusCUDA.sh
           docker exec build_pkg ./scripts/buildAviSynthCUDAFilters.sh
-          docker exec build_pkg sh -c "cp -v ./AviSynthPlus/avisynth-build/avisynth_*.${{ env.PKG_TYPE }} /output/"
-          docker exec build_pkg sh -c "cp -v ./build/avisynthcudafilters_*.${{ env.PKG_TYPE }} /output/"
-          docker exec build_pkg sh -c "find /output/ -type f -name '*.${{ env.PKG_TYPE }}' | xargs chown $(id rigaya -u):$(id rigaya -g)"
-          PKG_AVISYNTHPLUS_ORG=`ls ${{ steps.prep.outputs.output_dir }}/avisynth_*.${{ env.PKG_TYPE }}`
-          PKG_AVISYNTHPLUS=`echo ${PKG_AVISYNTHPLUS_ORG} | sed -e "s/\.${{ env.PKG_TYPE }}$/_${{ matrix.osver }}.${{ env.PKG_TYPE }}/"`
-          PKG_AVISYNTHCUDAFILTERS_ORG=`ls ${{ steps.prep.outputs.output_dir }}/avisynthcudafilters_*.${{ env.PKG_TYPE }}`
-          PKG_AVISYNTHCUDAFILTERS=`echo ${PKG_AVISYNTHCUDAFILTERS_ORG} | sed -e "s/\.${{ env.PKG_TYPE }}$/_${{ matrix.osver }}.${{ env.PKG_TYPE }}/"`
-          mv ${PKG_AVISYNTHPLUS_ORG} ${PKG_AVISYNTHPLUS}
-          mv ${PKG_AVISYNTHCUDAFILTERS_ORG} ${PKG_AVISYNTHCUDAFILTERS}
-          echo ${PKG_AVISYNTHPLUS}
-          echo ${PKG_AVISYNTHCUDAFILTERS}
-          echo "pkg_avisynthplus=${PKG_AVISYNTHPLUS}" >> $GITHUB_OUTPUT
-          echo "pkg_avisynthcudafilters=${PKG_AVISYNTHCUDAFILTERS}" >> $GITHUB_OUTPUT
+          # debとtar.xzの両方を回収する。tar.xzはdebのペイロードから生成しており内容は同一で、
+          # debを扱えないディストリ (Fedora / RHEL系 / Arch / openSUSE) 向け。
+          docker exec build_pkg sh -c "cp -v ./AviSynthPlus/avisynth-build/avisynth_*.deb ./AviSynthPlus/avisynth-build/avisynth_*.tar.xz /output/"
+          docker exec build_pkg sh -c "cp -v ./build/avisynthcudafilters_*.deb ./build/avisynthcudafilters_*.tar.xz /output/"
+          # コンテナ内はrootでビルドするため、/output配下の所有者をホスト実行ユーザに合わせる。
+          # id解決はコンテナ内で行う必要があるのでシングルクォートにする。
+          docker exec build_pkg sh -c 'find /output/ -type f | xargs chown $(id rigaya -u):$(id rigaya -g)'
+          # 単一ビルドなのでOSバージョンではなく linux をサフィックスとする
+          for ext in deb tar.xz; do
+            for name in avisynth avisynthcudafilters; do
+              PKG_ORG=`ls ${{ steps.prep.outputs.output_dir }}/${name}_*.${ext}`
+              PKG=`echo ${PKG_ORG} | sed -e "s/\.${ext}$/_${{ matrix.osver }}.${ext}/"`
+              mv ${PKG_ORG} ${PKG}
+              echo ${PKG}
+              echo "pkg_${name}_`echo ${ext} | tr . _`=${PKG}" >> $GITHUB_OUTPUT
+            done
+          done
 
       - name: Calc hash
         id: calc_hash
         run: |
-          7z h -scrc* ${{ steps.build_exec.outputs.pkg_avisynthplus }}
-          7z h -scrc* ${{ steps.build_exec.outputs.pkg_avisynthcudafilters }}
+          7z h -scrc* ${{ steps.build_exec.outputs.pkg_avisynth_deb }}
+          7z h -scrc* ${{ steps.build_exec.outputs.pkg_avisynth_tar_xz }}
+          7z h -scrc* ${{ steps.build_exec.outputs.pkg_avisynthcudafilters_deb }}
+          7z h -scrc* ${{ steps.build_exec.outputs.pkg_avisynthcudafilters_tar_xz }}
+
+      - name: Verify no CUDA runtime dependency
+        run: |
+          # meson 1.2以降のcudart_staticリンクが効いていることの確認。
+          # libcudart.so.* を要求していると、CUDA Toolkit未導入の環境で読み込めない。
+          mkdir -p check && tar -C check -xf ${{ steps.build_exec.outputs.pkg_avisynthcudafilters_tar_xz }}
+          FOUND=0
+          for so in `find check -name '*.so'`; do
+            if objdump -p ${so} | grep -q 'NEEDED.*libcudart'; then
+              echo "libcudartへの動的依存が残っています: ${so}"
+              FOUND=1
+            fi
+          done
+          [ ${FOUND} -eq 0 ] || exit 1
+          echo "libcudartへの動的依存はありません"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: avisynthplus_${{ matrix.dockerimg }}_${{ matrix.pkgtype }}
-          path: ${{ steps.build_exec.outputs.pkg_avisynthplus }}
+          name: avisynthplus_${{ matrix.dockerimg }}
+          path: |
+            ${{ steps.build_exec.outputs.pkg_avisynth_deb }}
+            ${{ steps.build_exec.outputs.pkg_avisynth_tar_xz }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: avisynthcudafilters_${{ matrix.dockerimg }}_${{ matrix.pkgtype }}
-          path: ${{ steps.build_exec.outputs.pkg_avisynthcudafilters }}
+          name: avisynthcudafilters_${{ matrix.dockerimg }}
+          path: |
+            ${{ steps.build_exec.outputs.pkg_avisynthcudafilters_deb }}
+            ${{ steps.build_exec.outputs.pkg_avisynthcudafilters_tar_xz }}
 
       - name: Upload Release Asset
         id: upload-release-asset 
@@ -117,5 +136,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           files: |
-            ${{ steps.build_exec.outputs.pkg_avisynthplus }}
-            ${{ steps.build_exec.outputs.pkg_avisynthcudafilters }}
+            ${{ steps.build_exec.outputs.pkg_avisynth_deb }}
+            ${{ steps.build_exec.outputs.pkg_avisynth_tar_xz }}
+            ${{ steps.build_exec.outputs.pkg_avisynthcudafilters_deb }}
+            ${{ steps.build_exec.outputs.pkg_avisynthcudafilters_tar_xz }}
