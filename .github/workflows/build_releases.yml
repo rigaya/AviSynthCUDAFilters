@@ -73,6 +73,10 @@ jobs:
           vcpkgGitCommitId: '${{ matrix.vcpkgCommitId }}'
           
       - name: Install dependencies by vcpkg
+        env:
+          # run-vcpkgが設定するGHAバイナリキャッシュは、Actionsのキャッシュサービス更新で
+          # ACTIONS_CACHE_URLが供給されなくなり失敗するため無効化する
+          VCPKG_BINARY_SOURCES: clear
         run: |
           vcpkg integrate install
           vcpkg install boost-spirit:x64-windows-static
