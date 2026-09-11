@@ -16,7 +16,7 @@ fi
 # cmake 3.19.5以降なら CUDA::cudart_static (インポートターゲット) が
 # rt / pthread / dl を INTERFACE 依存として持ち込むので問題ない。
 # Ubuntu 20.04 の apt 版 cmake は 3.16.3 なので、pip 版を使うこと
-# (docker/docker_ubuntu2004_cuda12 を参照)。
+# (docker/docker_ubuntu2004_cuda11 を参照)。
 wget https://github.com/AviSynth/AviSynthPlus/archive/refs/tags/v${AVISYNTHP_VER}.tar.gz && \
 tar -xzf v${AVISYNTHP_VER}.tar.gz && \
 mv AviSynthPlus-${AVISYNTHP_VER} AviSynthPlus && \

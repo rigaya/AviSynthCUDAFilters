@@ -18,7 +18,8 @@ jobs:
           # ABIフロアがglibc 2.31 / GLIBCXX 3.4.28 / CXXABI 1.3.12まで下がるため、
           # RHEL/Rocky/AlmaLinux 9 (GLIBCXX 3.4.29) やDebian 12を含む
           # 現行ディストリを1つの成果物でカバーできる。
-          - dockerimg: ubuntu2004_cuda12
+          # CUDAは11.8を使う。CUDA 12ではcompute_35 (Kepler) がビルドできない。
+          - dockerimg: ubuntu2004_cuda11
             osver: linux
             arch: x86_64
           #- dockerimg: ubuntu2204_cuda11_aarch64
@@ -96,6 +97,18 @@ jobs:
           7z h -scrc* ${{ steps.build_exec.outputs.pkg_avisynth_tar_xz }}
           7z h -scrc* ${{ steps.build_exec.outputs.pkg_avisynthcudafilters_deb }}
           7z h -scrc* ${{ steps.build_exec.outputs.pkg_avisynthcudafilters_tar_xz }}
+
+      - name: Verify Kepler (compute_35) support
+        run: |
+          # CUDA 12はcompute_35を切ったため、うっかりCUDA 12でビルドすると
+          # Kepler世代のGPUが動かなくなる。PTXが埋まっていることを確認する。
+          for so in AvsCUDA/AvsCUDA KFM/KFM KTGMC/KTGMC; do
+            if ! docker exec build_pkg /usr/local/cuda/bin/cuobjdump -lptx ./build/${so}.so | grep -q 'sm_35'; then
+              echo "compute_35のPTXが埋め込まれていません: ${so}.so"
+              exit 1
+            fi
+          done
+          echo "compute_35 (Kepler) のPTXは埋め込まれています"
 
       - name: Verify no CUDA runtime dependency
         run: |

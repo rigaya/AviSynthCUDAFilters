@@ -20,6 +20,29 @@ threads_dep = dependency('threads')
 
 # ビルド設定
 cuda_args = [ '-DENABLE_CUDA=1' ]
+
+# CUDAのコード生成対象。
+# Windows版 (cudaver.props) と同じ範囲を対象にする。
+# code=compute_XX (PTXのみ) にしているのもWindows版に揃えたもので、
+# ここに無い新しい世代のGPUでもドライバのJITで動作する。
+#
+# 注意: CUDA 12 は compute_35 (Kepler) のサポートを打ち切ったため、
+# Kepler対応の配布バイナリを作るにはCUDA 11.8が必要
+# (docker/docker_ubuntu2004_cuda11 を参照)。
+# 一方、利用者の環境でソースビルドする場合はCUDA 12しか無いこともあるため、
+# nvccのバージョンを見てcompute_35を落とす。
+nvcc = meson.get_compiler('cuda')
+if nvcc.version().version_compare('< 12.0')
+  cuda_args += [ '-gencode=arch=compute_35,code=compute_35' ]
+else
+  message('nvcc @0@ は compute_35 (Kepler) に対応しないため対象から外します'.format(nvcc.version()))
+endif
+cuda_args += [
+  '-gencode=arch=compute_50,code=compute_50',
+  '-gencode=arch=compute_61,code=compute_61',
+  '-gencode=arch=compute_75,code=compute_75',
+  '-gencode=arch=compute_86,code=compute_86',
+]
 cpp_args = [ '-DENABLE_CUDA=1' ]
 link_args = []
 is_x86 = host_machine.cpu_family() in ['x86', 'x86_64']
