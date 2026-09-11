@@ -20,6 +20,11 @@ ARG DEBIAN_FRONTEND=noninteractive \
     CMAKE_VER=3.31.6 \
     GCC_VER=10
 
+# archive.ubuntu.com は時折取得に失敗する (CIで build-essential の取得が
+# "Connection failed" になった実績あり)。既定ではリトライしないので明示的に入れる。
+RUN printf 'Acquire::Retries "10";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' \
+      > /etc/apt/apt.conf.d/80-retries
+
 # meson / cmake はいずれも apt 版 (20.04 では meson 0.53 / cmake 3.16.3) ではなく pip 版を使う。
 #
 # meson: 1.2 以降は cuda dependency が cudart_static を既定でリンクするため、
