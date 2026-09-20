@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <memory>
 #include <deque>
-#include <cstdlib>
 
 #include <cuda_runtime_api.h>
 #include <cuda_device_runtime_api.h>
@@ -594,6 +593,8 @@ __device__ void dev_expanding_search_1(
             }
         }
     }
+    // 次の探索段階が更新済みの中心・コストを読む前に全員で同期する。
+    __syncthreads();
 }
 
 // 順番はCPU版に合わせる
@@ -692,6 +693,8 @@ __device__ void dev_expanding_search_2(
             }
         }
     }
+    // 次の探索段階が更新済みの中心・コストを読む前に全員で同期する。
+    __syncthreads();
 }
 
 __constant__ int2 c_hex2_search_1_area[] = {
@@ -763,6 +766,8 @@ __device__ void dev_hex2_search_1(
             }
         }
     }
+    // 次の探索段階が更新済みの中心・コストを読む前に全員で同期する。
+    __syncthreads();
 }
 
 template <typename pixel_t, int BLK_SIZE, bool CHROMA>
@@ -816,7 +821,7 @@ struct SearchBatch {
     int* dst_sad;
     const SearchBlock* __restrict__ blocks;
     short2* vectors; // [x,y]
-    volatile int* prog;
+    int* prog;
     int* next;
     const pixel_t* __restrict__ pSrcY;
     const pixel_t* __restrict__ pSrcU;
@@ -850,8 +855,7 @@ __global__ void
         SearchBatchData<pixel_t> *pdata,
         int nBlkX, int nBlkY, int nPad,
         int nPitchY, int nPitchUV,
-        int nImgPitchY, int nImgPitchUV,
-        int staticColumns
+        int nImgPitchY, int nImgPitchUV
     ) {
     // threads=BLK_SIZE*8
     // このkernelの並列構成と役割:
@@ -879,18 +883,13 @@ __global__ void
     __syncthreads();
 
     __shared__ int blkx; // 動的に割り当てられる列インデックス。全スレッドで共有するためshared使用。
-    int columnLoop = 0;
 
     //for (int blkx = blockIdx.x; blkx < nBlkX; blkx += gridDim.x) {
     while (true) {
         if (tx == 0) {
-            if (staticColumns) {
-                blkx = blockIdx.y + columnLoop * gridDim.y;
-            } else {
-                // d.d.next: 次に処理すべき列（blkx）を示す共有カウンタ。
-                // 複数のgrid.yブロックでatomicAddにより列を取り合う（動的ワーク配分）。
-                blkx = atomicAdd(d.d.next, 1);
-            }
+            // 実行中のCTAが未取得の最小列を取る。担当を固定すると、次巡の列で
+            // 未起動CTAの完了を待ち、全実行枠を占有したまま停止することがある。
+            blkx = atomicAdd(d.d.next, 1);
         }
         __syncthreads();
 
@@ -942,11 +941,16 @@ __global__ void
             // 隣接ブロックの結果（予測や境界条件）に依存するため、左隣等の進捗を参照して同期する。
 #if ANALYZE_SYNC == 1
             if (tx == 0 && blkx > 0) {
-                while (d.d.prog[blkx - 1] < blky); // 左隣の同じ行が終わるまで待つ
+                // atomicで完了を取得してから、左隣が公開したベクトルを読み取る。
+                // 古いCUDA世代でも使えるatomicとfenceで公開・取得の順序を保証する。
+                while (atomicAdd(&d.d.prog[blkx - 1], 0) < blky) {}
+                __threadfence();
             }
 #elif ANALYZE_SYNC == 2
             if (tx == 0 && blkx >= 2) {
-                while (d.d.prog[blkx - (1 + (blkx & 1))] < blky); // 奇偶で片側の列に依存
+                // 奇偶で片側の列に依存する場合も同じ公開・取得の順序を守る。
+                while (atomicAdd(&d.d.prog[blkx - (1 + (blkx & 1))], 0) < blky) {}
+                __threadfence();
             }
 #endif
 
@@ -958,42 +962,32 @@ __global__ void
             __shared__ const pixel_t* pRefU[8];
             __shared__ const pixel_t* pRefV[8];
 
-            if (tx < 7) { // マジックナンバー7: 候補数（zero, global, predictor, predictors[1..3], median）
-                __shared__ volatile short pred[7][2]; // x, y
+            __shared__ short pred[7][2]; // 各候補のx,y。書込みと読取りを段階ごとに同期する。
+            if (tx < 6) {
+                // zero, global, predictor, predictors[1]～[3]を取得
+                // REF_VECTOR_INDEX: 先頭の定数領域（zero/global）および近傍予測の参照位置
+                short2 vec = d.d.vectors[REF_VECTOR_INDEX[tx]];
+                dev_clip_mv(vec, CLIP_RECT);
+                // CPU版と合わせる場合は3をmedian用に空け、他の場合は末尾を使う。
+                const int dst = CPU_EMU && tx >= 3 ? tx + 1 : tx;
+                pred[dst][0] = vec.x;
+                pred[dst][1] = vec.y;
+            }
+            // 別スレッドが書いた候補をmedian計算で読む前に全員で同期する。
+            __syncthreads();
 
-                if (tx < 6) {
-                    // zero, global, predictor, predictors[1]～[3]を取得
-                    // REF_VECTOR_INDEX: 先頭の定数領域（zero/global）および近傍予測の参照位置
-                    short2 vec = d.d.vectors[REF_VECTOR_INDEX[tx]];
-                    dev_clip_mv(vec, CLIP_RECT);
+            if (tx < 2) {
+                const int first = CPU_EMU ? 4 : 3;
+                const int dst = CPU_EMU ? 3 : 6;
+                int a = pred[first][tx];
+                int b = pred[first + 1][tx];
+                int c = pred[first + 2][tx];
+                pred[dst][tx] = min(max(min(a, b), c), max(a, b));
+            }
+            // medianのx,yが揃ってから候補を参照する。warpの暗黙同期には依存しない。
+            __syncthreads();
 
-                    if (CPU_EMU) {
-                        // 3はmedianなので空ける（CPU版と合わせる）
-                        int dx = (tx < 3) ? tx : (tx + 1);
-                        pred[dx][0] = vec.x;
-                        pred[dx][1] = vec.y;
-                        // memfence
-                        if (tx < 2) {
-                            // Median predictor を2スレッドで算出
-                            int a = pred[4][tx];
-                            int b = pred[5][tx];
-                            int c = pred[6][tx];
-                            pred[3][tx] = min(max(min(a, b), c), max(a, b));
-                        }
-                    } else {
-                        pred[tx][0] = vec.x;
-                        pred[tx][1] = vec.y;
-                        // memfence
-                        if (tx < 2) {
-                            // Median predictor の別実装（配列配置違い）
-                            int a = pred[3][tx];
-                            int b = pred[4][tx];
-                            int c = pred[5][tx];
-                            pred[6][tx] = min(max(min(a, b), c), max(a, b));
-                        }
-                    }
-                }
-                // memfence: 予測ベクトル座標 → resultに反映、コストの初期値を設定
+            if (tx < 7) {
                 int x = result[tx].xy.x = pred[tx][0];
                 int y = result[tx].xy.y = pred[tx][1];
                 result[tx].cost = (LAMBDA * dev_sq_norm(x, y, PRED_X, PRED_Y)) >> 8; // モーションコスト
@@ -1114,13 +1108,12 @@ __global__ void
                 __threadfence();
 
                 // 完了を書き込み（行単位）。隣接列がこの情報を参照して待機解除する。
-                d.d.prog[blkx] = blky;
+                atomicExch(&d.d.prog[blkx], blky);
             }
 
             // 共有メモリ保護
             __syncthreads();
         }
-        ++columnLoop;
     }
 }
 
@@ -2470,11 +2463,10 @@ public:
         static_assert(SearchBatchData<pixel_t>::LEN <= BLK_SIZE * 8);
         dim3 threads(BLK_SIZE * 8);
         // 余分なブロックは仕事せずに終了するので問題ない
-        const bool staticColumns = std::getenv("KMV_SEARCH_DYNAMIC_COLUMNS") == nullptr;
         dim3 blocks(batch, std::min(nBlkX, nBlkY));
         kl_search<pixel_t, BLK_SIZE, SEARCH, NPEL, CHROMA, CPU_EMU><<<blocks, threads, 0, stream>>>(
             pdata, nBlkX, nBlkY, nPad,
-            nPitchY, nPitchUV, nImgPitchY, nImgPitchUV, staticColumns ? 1 : 0);
+            nPitchY, nPitchUV, nImgPitchY, nImgPitchUV);
         DEBUG_SYNC;
     }
 
